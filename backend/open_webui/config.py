@@ -955,6 +955,12 @@ MILVUS_URI = os.environ.get("MILVUS_URI", f"{DATA_DIR}/vector_db/milvus.db")
 # Qdrant
 QDRANT_URI = os.environ.get("QDRANT_URI", None)
 
+# LightRAG Configuration Variables
+LIGHTRAG_DIR = os.getenv("LIGHTRAG_DIR", f"{DATA_DIR}/lightrag_index")
+LIGHTRAG_EMBEDDING_MODEL = os.getenv("LIGHTRAG_EMBEDDING_MODEL", "text-embedding-3-large")
+LIGHTRAG_LLM_MODEL = os.getenv("LIGHTRAG_LLM_MODEL", "gpt-4o-mini")
+LIGHTRAG_EMBEDDING_MAX_TOKENS = int(os.getenv("LIGHTRAG_EMBEDDING_MAX_TOKENS", "8192"))
+
 ####################################
 # Information Retrieval (RAG)
 ####################################

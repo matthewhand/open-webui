@@ -43,6 +43,13 @@ fake-useragent==1.5.1
 chromadb==0.5.9
 pymilvus==2.4.7
 qdrant-client~=1.12.0
+lightrag-hku~=1.0.1
+aioboto3
+nano_vectordb
+neo4j
+oracledb
+numpy
+ollama
 
 sentence-transformers==3.2.0
 colbert-ai==0.2.21
@@ -92,3 +99,4 @@ pytest~=8.3.2
 pytest-docker~=3.1.1
 
 googleapis-common-protos==1.63.2
+
