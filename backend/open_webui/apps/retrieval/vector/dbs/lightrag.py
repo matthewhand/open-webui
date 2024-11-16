@@ -6,27 +6,32 @@ import uuid
 import json
 import numpy as np
 from typing import Optional, List, Dict, Any, Union
-from dataclasses import dataclass, field, fields  # Ensure 'fields' is imported
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from logging import getLogger, StreamHandler, Formatter, DEBUG
+import threading
 
+# Importing necessary LightRAG modules
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import gpt_4o_mini_complete, openai_embedding
 from lightrag.utils import EmbeddingFunc, convert_response_to_json
 from pydantic import BaseModel
-import threading  # Corrected import for Thread
 
 # Initialize the main logger
 logger = getLogger("lightrag_client")
 logger.setLevel(DEBUG)  # Set to DEBUG for detailed logs
+
+# Configure console handler
 console_handler = StreamHandler()
 console_handler.setLevel(DEBUG)
 formatter = Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console_handler.setFormatter(formatter)
+
+# Avoid adding multiple handlers if they already exist
 if not logger.hasHandlers():
     logger.addHandler(console_handler)
 else:
-    # Avoid adding multiple handlers
+    # Clear existing handlers and add the configured one
     logger.handlers.clear()
     logger.addHandler(console_handler)
 
@@ -36,6 +41,7 @@ class QueryResult(BaseModel):
     embeddings: Optional[List[List[float]]] = None
     metadatas: Optional[List[List[Dict[str, Any]]]] = None
     documents: Optional[List[List[str]]] = None
+    distances: Optional[List[List[float]]] = field(default_factory=list)  # Added 'distances' field
     error: Optional[str] = None
 
     class Config:
@@ -43,18 +49,20 @@ class QueryResult(BaseModel):
 
     def dict(self, **kwargs):
         """
-        Override dict() to handle numpy.ndarray serialization.
+        Override dict() to handle numpy.ndarray serialization and include 'distances'.
         """
         data = super().dict(**kwargs)
         if self.embeddings is not None:
             data['embeddings'] = [embedding for embedding in self.embeddings]
+        if self.distances is not None:
+            data['distances'] = [distance for distance in self.distances]
         return data
 
 # AsyncRunner to run coroutines in synchronous methods
 class AsyncRunner:
     def __init__(self):
         self.loop = asyncio.new_event_loop()
-        self.thread = threading.Thread(target=self._start_loop, daemon=True)  # Corrected to use threading.Thread
+        self.thread = threading.Thread(target=self._start_loop, daemon=True)
         self.thread.start()
         logger.debug("AsyncRunner initialized with a new event loop.")
 
@@ -316,9 +324,9 @@ class LightRAGClient:
 
             logger.debug(f"[Request ID: {request_id}] Inserting {len(items)} documents into collection '{collection_name}'.")
             lightrag_instance = self.get_lightRAG_instance(collection_name)
-            result = await lightrag_instance.ainsert(items)
-            logger.debug(f"[Request ID: {request_id}] Insertion result: {result}")
-            return result
+            await lightrag_instance.ainsert(items)
+            logger.debug(f"[Request ID: {request_id}] Insertion succeeded.")
+            return True
         except AttributeError as e:
             logger.error(f"[Request ID: {request_id}] Attribute error during insertion: {e}")
             return False
@@ -361,6 +369,8 @@ class LightRAGClient:
             logger.error(f"[Request ID: {request_id}] Runtime error during synchronous insert: {e}")
             return False
 
+    # --------------------- Query Methods ---------------------
+
     async def query_async(
         self,
         query: str = "",
@@ -391,23 +401,23 @@ class LightRAGClient:
             if not isinstance(query, str):
                 error_msg = "Query must be a string."
                 logger.error(f"[Request ID: {request_id}] {error_msg} Received type: {type(query)}")
-                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=error_msg)
+                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
 
             if not query.strip():
                 error_msg = "Query string cannot be empty."
                 logger.warning(f"[Request ID: {request_id}] {error_msg}")
-                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=error_msg)
+                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
 
             if filter:
                 # Validate filter structure
                 if not isinstance(filter, dict):
                     error_msg = "Filter must be a dictionary."
                     logger.error(f"[Request ID: {request_id}] {error_msg} Received type: {type(filter)}")
-                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=error_msg)
+                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
                 if 'excluded_ids' in filter and not isinstance(filter['excluded_ids'], list):
                     error_msg = "'excluded_ids' in filter must be a list."
                     logger.error(f"[Request ID: {request_id}] {error_msg} Received type: {type(filter['excluded_ids'])}")
-                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=error_msg)
+                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
 
                 logger.debug(f"[Request ID: {request_id}] Performing query with filter: {filter}")
                 response = await lightrag_instance.aquery(query, param)
@@ -422,11 +432,25 @@ class LightRAGClient:
                     filtered_ids = [doc_id for doc_id in response.ids[0] if doc_id not in excluded_ids]
                     logger.debug(f"[Request ID: {request_id}] Filtered IDs count: {len(filtered_ids)} out of {len(response.ids[0])}")
 
-                    return QueryResult(ids=[filtered_ids], embeddings=response.embeddings, metadatas=response.metadatas, documents=response.documents, error=None)
+                    # Calculate distances if necessary; for now, use placeholders
+                    distances = [0.0 for _ in filtered_ids]  # Placeholder distances
+
+                    # Fetch documents and metadata for filtered IDs
+                    documents = await lightrag_instance.afetch_documents(filtered_ids)
+                    metadatas = await lightrag_instance.afetch_metadatas(filtered_ids)
+
+                    return QueryResult(
+                        ids=[filtered_ids],
+                        embeddings=response.embeddings,
+                        metadatas=metadatas,
+                        documents=documents,
+                        distances=[[d for d in distances]],  # Wrap in list to match structure
+                        error=None
+                    )
                 else:
                     error_msg = "No documents found for the given query."
                     logger.error(f"[Request ID: {request_id}] {error_msg}")
-                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=error_msg)
+                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
             else:
                 # Perform a standard generative query
                 logger.debug(f"[Request ID: {request_id}] Performing standard query without filter.")
@@ -436,27 +460,41 @@ class LightRAGClient:
                 # Check if response has 'ids' attribute
                 if hasattr(response, 'ids') and response.ids and len(response.ids) > 0:
                     logger.debug(f"[Request ID: {request_id}] Returning QueryResult with IDs: {response.ids}")
-                    return QueryResult(ids=response.ids, embeddings=response.embeddings, metadatas=response.metadatas, documents=response.documents, error=None)
+                    # Calculate distances if necessary; for now, use placeholders
+                    distances = [[0.0 for _ in ids] for ids in response.ids]  # Placeholder distances
+
+                    # Fetch documents and metadata for IDs
+                    documents = await lightrag_instance.afetch_documents(response.ids[0])
+                    metadatas = await lightrag_instance.afetch_metadatas(response.ids[0])
+
+                    return QueryResult(
+                        ids=response.ids,
+                        embeddings=response.embeddings,
+                        metadatas=metadatas,
+                        documents=documents,
+                        distances=distances,  # Include distances
+                        error=None
+                    )
                 elif isinstance(response, str):
                     try:
                         json_response = json.loads(response)
                         if 'error' in json_response:
-                            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=json_response['error'])
+                            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=json_response['error'])
                         else:
                             error_msg = "LLM returned an unexpected string response without an error key."
                             logger.error(f"[Request ID: {request_id}] {error_msg} Content: {response}")
-                            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=error_msg)
+                            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
                     except json.JSONDecodeError:
                         error_msg = "Unexpected string response from query."
                         logger.error(f"[Request ID: {request_id}] {error_msg} Content: {response}")
-                        return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=error_msg)
+                        return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
                 else:
                     error_msg = "Unexpected response format from query."
                     logger.error(f"[Request ID: {request_id}] {error_msg} Response type: {type(response)}. Content: {response}")
-                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=error_msg)
+                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
         except Exception as e:
             logger.error(f"[Request ID: {request_id}] Query failed for '{query}' with error: {e}")
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Internal server error during query processing.")
+            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Internal server error during query processing.")
         finally:
             logger.debug(f"[Request ID: {request_id}] Completed query_async.")
             await self._query_done(collection_name)
@@ -492,74 +530,200 @@ class LightRAGClient:
             return result
         except Exception as e:
             logger.error(f"[Request ID: {request_id}] Runtime error during synchronous query: {e}")
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Runtime error during query.")
+            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Runtime error during query.")
+
+    # --------------------- Search Methods ---------------------
+
+    async def search_async(
+        self,
+        query: Optional[str] = None,
+        *,
+        collection_name: str = "default",
+        mode: Optional[str] = None,
+        vectors: Optional[List[np.ndarray]] = None,
+        limit: Optional[int] = None
+    ) -> Optional[QueryResult]:
+        """
+        Asynchronous search handler.
+        Redirects to `vector_search_async` if vectors are provided, or performs a query-based search otherwise.
+
+        Args:
+            query (Optional[str], optional): The query string. Defaults to None.
+            collection_name (str, optional): The name of the collection. Defaults to "default".
+            mode (Optional[str], optional): The search mode for query-based searches. Defaults to None.
+            vectors (Optional[List[np.ndarray]], optional): List of query vectors for similarity search. Defaults to None.
+            limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to None.
+
+        Returns:
+            Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, distances, or an error message encapsulated in QueryResult.
+        """
+        request_id = str(uuid.uuid4())
+        # Truncate vectors for logging
+        truncated_vectors = self._truncate_vectors_for_logging(vectors)
+        logger.debug(f"[Request ID: {request_id}] Starting search_async with query: '{query}', vectors: {truncated_vectors}, mode: '{mode}', limit: {limit}, collection_name: '{collection_name}'")
+
+        try:
+            if vectors:
+                logger.debug(f"[Request ID: {request_id}] Vectors provided. Redirecting to vector_search_async.")
+                return await self.vector_search_async(vectors, collection_name=collection_name, limit=limit)
+            elif query:
+                logger.debug(f"[Request ID: {request_id}] Query provided. Redirecting to query_async.")
+                param = QueryParam(mode=mode) if mode else QueryParam()
+                return await self.query_async(query=query, collection_name=collection_name, param=param, filter=None)
+            else:
+                error_msg = "Either `query` or `vectors` must be provided for search."
+                logger.error(f"[Request ID: {request_id}] {error_msg}")
+                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
+        except Exception as e:
+            logger.error(f"[Request ID: {request_id}] Search failed with error: {e}")
+            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Internal server error during search.")
+        finally:
+            logger.debug(f"[Request ID: {request_id}] Completed search_async.")
+            await self._query_done(collection_name)
+
+    def search(
+        self,
+        query: Optional[str] = None,
+        *,
+        collection_name: str = "default",
+        mode: Optional[str] = None,
+        vectors: Optional[List[np.ndarray]] = None,
+        limit: Optional[int] = None
+    ) -> Optional[QueryResult]:
+        """
+        Synchronously search the specified collection with optional vectors for similarity filtering and limit.
+
+        Args:
+            query (Optional[str], optional): The query string. Defaults to None.
+            collection_name (str, optional): The name of the collection. Defaults to "default".
+            mode (Optional[str], optional): The search mode for query-based searches. Defaults to None.
+            vectors (Optional[List[np.ndarray]], optional): List of query vectors for similarity search. Defaults to None.
+            limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to None.
+
+        Returns:
+            Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, distances, or an error message encapsulated in QueryResult.
+        """
+        request_id = str(uuid.uuid4())
+        if query is None and not vectors:
+            error_msg = "search() requires either a `query` or `vectors` argument."
+            logger.error(f"[Request ID: {request_id}] {error_msg}")
+            raise ValueError(error_msg)
+
+        # Truncate vectors for logging
+        truncated_vectors = self._truncate_vectors_for_logging(vectors)
+        logger.debug(f"[Request ID: {request_id}] Calling synchronous search with query: '{query}', vectors: {truncated_vectors}, mode: '{mode}', collection_name: '{collection_name}', limit: {limit}")
+        try:
+            return self.async_runner.run(
+                self.search_async(query=query, collection_name=collection_name, mode=mode, vectors=vectors, limit=limit),
+                request_id
+            )
+        except Exception as e:
+            logger.error(f"[Request ID: {request_id}] Runtime error during synchronous search: {e}")
+            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Runtime error during search.")
 
     # --------------------- Vector Search Methods ---------------------
 
     async def vector_search_async(
         self,
-        vectors: List[np.ndarray],
+        vectors: List[Union[np.ndarray, list]],
         *,
         collection_name: str = "default",
         limit: Optional[int] = None
     ) -> Optional[QueryResult]:
         """
-        Asynchronously perform vector search on the specified collection.
+        Asynchronously perform vector search on the specified collection using LightRAG's vector storage.
 
         Args:
-            vectors (List[np.ndarray]): List of query vectors.
+            vectors (List[Union[np.ndarray, list]]): List of query vectors.
             collection_name (str, optional): The name of the collection. Defaults to "default".
             limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to None.
 
         Returns:
-            Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, or an error message encapsulated in QueryResult.
+            Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, distances, or an error message encapsulated in QueryResult.
         """
         request_id = str(uuid.uuid4())
         logger.debug(f"[Request ID: {request_id}] Starting vector_search_async with {len(vectors)} vectors, limit: {limit}, collection_name: '{collection_name}'")
 
         try:
             lightrag_instance = self.get_lightRAG_instance(collection_name)
-            # Assuming LightRAG has a 'vector_storage' attribute
-            vector_storage = getattr(lightrag_instance, 'vector_storage', None)
-            if vector_storage is None:
-                logger.error(f"[Request ID: {request_id}] LightRAG instance does not have 'vector_storage' attribute.")
-                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Vector storage not initialized.")
 
-            # Initialize lists to collect results
+            # Access the appropriate vector storage; e.g., 'chunks_vdb'
+            vector_storage = getattr(lightrag_instance, 'chunks_vdb', None)
+            if vector_storage is None:
+                error_msg = f"Vector storage 'chunks_vdb' not found in collection '{collection_name}'."
+                logger.error(f"[Request ID: {request_id}] {error_msg}")
+                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
+
             all_doc_ids = []
             all_embeddings = []
             all_metadatas = []
             all_documents = []
+            all_distances = []
 
             for idx, vector in enumerate(vectors):
-                logger.debug(f"[Request ID: {request_id}] Processing vector {idx + 1}/{len(vectors)}")
+                truncated_vector = self._truncate_vector(vector)
+                logger.debug(f"[Request ID: {request_id}] Processing vector {idx + 1}/{len(vectors)}: {truncated_vector}")
                 try:
-                    # Perform similarity search using the 'query' method
-                    results = await vector_storage.query(query=vector.tolist(), top_k=limit or 5)
-                    logger.debug(f"[Request ID: {request_id}] Retrieved {len(results)} results for vector {idx + 1}")
-
-                    if results:
-                        doc_ids = [result['id'] for result in results]
-                        embeddings = [result.get('embedding', []) for result in results]
-                        metadatas = [result.get('metadata', {}) for result in results]
-                        documents = [result.get('document', "") for result in results]
-
-                        all_doc_ids.append(doc_ids)
-                        all_embeddings.append(embeddings)
-                        all_metadatas.append(metadatas)
-                        all_documents.append(documents)
+                    # Ensure the vector is in list format and has correct dimensions
+                    if isinstance(vector, np.ndarray):
+                        query_vector = vector.tolist()
+                        logger.debug(f"[Request ID: {request_id}] Converted numpy array to list for vector {idx + 1}")
+                    elif isinstance(vector, list):
+                        query_vector = vector
+                        logger.debug(f"[Request ID: {request_id}] Vector {idx + 1} is already a list.")
                     else:
-                        logger.warning(f"[Request ID: {request_id}] No results found for vector {idx + 1}")
+                        logger.error(f"[Request ID: {request_id}] Unsupported vector type: {type(vector)}. Skipping this vector.")
                         all_doc_ids.append([])
                         all_embeddings.append([])
                         all_metadatas.append([])
                         all_documents.append([])
+                        all_distances.append([])
+                        continue
+
+                    # Validate embedding dimensions
+                    if len(query_vector) != self.embedding_func.embedding_dim:
+                        error_msg = f"Vector {idx + 1} has incorrect dimensions: {len(query_vector)}. Expected: {self.embedding_func.embedding_dim}."
+                        logger.error(f"[Request ID: {request_id}] {error_msg}")
+                        all_doc_ids.append([])
+                        all_embeddings.append([])
+                        all_metadatas.append([])
+                        all_documents.append([])
+                        all_distances.append([])
+                        continue
+
+                    # Log the query vector for debugging (truncated)
+                    logger.debug(f"[Request ID: {request_id}] Query Vector {idx + 1}: {self._truncate_vector(query_vector)}")
+
+                    # Perform similarity search using the vector storage's query method
+                    search_results = vector_storage._client.query(
+                        query=query_vector,
+                        top_k=limit or 5,
+                        better_than_threshold=0.0,  # Temporarily set to 0.0 to include all results
+                    )
+                    logger.debug(f"[Request ID: {request_id}] Retrieved {len(search_results)} results for vector {idx + 1}")
+
+                    # Process search_results into QueryResult format
+                    # Assuming search_results is a list of dicts with keys: 'id', 'embedding', 'metadata', 'document', 'distance'
+                    doc_ids = [result['id'] for result in search_results]
+                    embeddings = [result['embedding'] for result in search_results]
+                    metadatas = [result['metadata'] for result in search_results]
+                    documents = [result['document'] for result in search_results]
+                    distances = [result['distance'] for result in search_results]
+
+                    all_doc_ids.append(doc_ids)
+                    all_embeddings.append(embeddings)
+                    all_metadatas.append(metadatas)
+                    all_documents.append(documents)
+                    all_distances.append(distances)
+
+                    logger.debug(f"[Request ID: {request_id}] Aggregated results for vector {idx + 1}: {doc_ids}")
                 except Exception as e:
                     logger.error(f"[Request ID: {request_id}] Error during vector search for vector {idx + 1}: {e}")
                     all_doc_ids.append([])
                     all_embeddings.append([])
                     all_metadatas.append([])
                     all_documents.append([])
+                    all_distances.append([])
 
             logger.debug(f"[Request ID: {request_id}] Vector search completed for all vectors.")
             return QueryResult(
@@ -567,18 +731,19 @@ class LightRAGClient:
                 embeddings=all_embeddings,
                 metadatas=all_metadatas,
                 documents=all_documents,
+                distances=all_distances,  # Include distances
                 error=None
             )
         except Exception as e:
             logger.error(f"[Request ID: {request_id}] Vector search failed with error: {e}")
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Internal server error during vector search.")
+            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Internal server error during vector search.")
         finally:
             logger.debug(f"[Request ID: {request_id}] Completed vector_search_async.")
             await self._query_done(collection_name)
 
     def vector_search(
         self,
-        vectors: List[np.ndarray],
+        vectors: List[Union[np.ndarray, list]],
         *,
         collection_name: str = "default",
         limit: Optional[int] = None
@@ -587,12 +752,12 @@ class LightRAGClient:
         Synchronously perform vector search on the specified collection.
 
         Args:
-            vectors (List[np.ndarray]): List of query vectors.
+            vectors (List[Union[np.ndarray, list]]): List of query vectors.
             collection_name (str, optional): The name of the collection. Defaults to "default".
             limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to None.
 
         Returns:
-            Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, or an error message encapsulated in QueryResult.
+            Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, distances, or an error message encapsulated in QueryResult.
         """
         request_id = str(uuid.uuid4())
         logger.debug(f"[Request ID: {request_id}] Calling synchronous vector_search with {len(vectors)} vectors, collection_name: '{collection_name}', limit: {limit}")
@@ -605,88 +770,7 @@ class LightRAGClient:
             return result
         except Exception as e:
             logger.error(f"[Request ID: {request_id}] Runtime error during synchronous vector search: {e}")
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Runtime error during vector search.")
-
-    async def search_async(
-        self,
-        query: Optional[str] = None,
-        *,
-        collection_name: str = "default",
-        vectors: Optional[List[np.ndarray]] = None,
-        limit: Optional[int] = None
-    ) -> Optional[QueryResult]:
-        """
-        Asynchronous search handler.
-
-        Redirects to `vector_search_async` if vectors are provided, or performs a query-based search otherwise.
-
-        Args:
-            query (Optional[str], optional): The query string. If None, a dummy value is used.
-            collection_name (str, optional): The name of the collection. Defaults to "default".
-            vectors (Optional[List[np.ndarray]], optional): Vectors to perform similarity search. Defaults to None.
-            limit (Optional[int], optional): Maximum number of results to return per vector or query. Defaults to None.
-
-        Returns:
-            Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, or an error message encapsulated in QueryResult.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Starting search_async with query: '{query}', vectors: {vectors}, limit: {limit}, collection_name: '{collection_name}'")
-
-        try:
-            if vectors:
-                logger.debug(f"[Request ID: {request_id}] Vectors provided. Redirecting to vector_search_async.")
-                return await self.vector_search_async(vectors, collection_name=collection_name, limit=limit)
-            elif query:
-                logger.debug(f"[Request ID: {request_id}] Query provided. Redirecting to query_async.")
-                return await self.query_async(query=query, collection_name=collection_name)
-            else:
-                error_msg = "Either `query` or `vectors` must be provided for search."
-                logger.error(f"[Request ID: {request_id}] {error_msg}")
-                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error=error_msg)
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Search failed with error: {e}")
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Internal server error during search.")
-        finally:
-            logger.debug(f"[Request ID: {request_id}] Completed search_async.")
-            await self._query_done(collection_name)
-
-    def search(
-        self,
-        query: Optional[str] = None,
-        *,
-        collection_name: str = "default",
-        vectors: Optional[List[np.ndarray]] = None,
-        limit: Optional[int] = None
-    ) -> Optional[QueryResult]:
-        """
-        Synchronously search the specified collection with optional vectors for similarity filtering and limit.
-        Uses a dummy value for 'query' if not provided.
-
-        Args:
-            query (Optional[str], optional): The search query string. If None, a dummy value is used.
-            collection_name (str, optional): The name of the collection. Defaults to "default".
-            vectors (Optional[List[np.ndarray]], optional): Vectors to perform similarity search. Defaults to None.
-            limit (Optional[int], optional): Maximum number of results to return per vector or query. Defaults to None.
-
-        Returns:
-            Optional[QueryResult]: The search result encapsulated in QueryResult.
-        """
-        request_id = str(uuid.uuid4())
-        if query is None:
-            logger.warning(f"[Request ID: {request_id}] No query provided to search. Using dummy value 'default_query'.")
-            query = "default_query"  # Dummy value
-
-        logger.debug(f"[Request ID: {request_id}] Calling synchronous search with query: '{query}', collection_name: '{collection_name}', vectors: {vectors}, limit: {limit}")
-        try:
-            result = self.async_runner.run(
-                self.search_async(query=query, collection_name=collection_name, vectors=vectors, limit=limit),
-                request_id
-            )
-            logger.debug(f"[Request ID: {request_id}] Synchronous search result: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Runtime error during synchronous search: {e}")
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Runtime error during synchronous search.")
+            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Runtime error during vector search.")
 
     # --------------------- Deletion Methods ---------------------
 
@@ -741,6 +825,41 @@ class LightRAGClient:
             return False
 
     # --------------------- Helper Methods ---------------------
+
+    def _truncate_vector(self, vector: Union[np.ndarray, list], max_elements: int = 3) -> str:
+        """
+        Truncate a vector to the first 'max_elements' elements for logging purposes.
+
+        Args:
+            vector (Union[np.ndarray, list]): The vector to truncate.
+            max_elements (int, optional): Number of elements to keep. Defaults to 3.
+
+        Returns:
+            str: Truncated vector as a string.
+        """
+        if isinstance(vector, np.ndarray):
+            vector = vector.tolist()
+        if isinstance(vector, list):
+            if len(vector) > max_elements:
+                return f"{vector[:max_elements]}..."
+            else:
+                return str(vector)
+        return str(vector)
+
+    def _truncate_vectors_for_logging(self, vectors: Optional[List[Union[np.ndarray, list]]], max_elements: int = 3) -> Optional[List[str]]:
+        """
+        Truncate all vectors in a list for logging purposes.
+
+        Args:
+            vectors (Optional[List[Union[np.ndarray, list]]]): List of vectors to truncate.
+            max_elements (int, optional): Number of elements to keep in each vector. Defaults to 3.
+
+        Returns:
+            Optional[List[str]]: List of truncated vectors as strings.
+        """
+        if vectors is None:
+            return None
+        return [self._truncate_vector(v, max_elements) for v in vectors]
 
     async def _query_done(self, collection_name: str):
         """
@@ -840,51 +959,76 @@ class LightRAGClient:
                 print("Failed to insert documents from dictionary.")
                 logger.error(f"[Request ID: {request_id}] Failed to insert documents from dictionary.")
 
-            # Example query with filter
-            query = "Tell me about OpenAI and LightRAG."
-            filter_criteria = {"excluded_ids": ["doc-12345"]}  # Example filter
-            logger.debug(f"[Request ID: {request_id}] Starting query with filter: query='{query}', filter={filter_criteria}")
-            response = await self.query_async(
-                query=query,
-                collection_name="default_collection",
-                param=QueryParam(mode="hybrid"),
-                filter=filter_criteria
-            )
-            if isinstance(response, QueryResult):
-                if response.error:
-                    print(f"Query Error: {response.error}")
-                    logger.error(f"[Request ID: {request_id}] Query Error: {response.error}")
-                else:
-                    print("Query Response IDs:")
-                    print(response.ids)
-                    logger.info(f"[Request ID: {request_id}] Query Response IDs: {response.ids}")
-            else:
-                print("No response for the query.")
-                logger.warning(f"[Request ID: {request_id}] No response received for the query.")
+            # Compute embeddings for inserted documents
+            all_documents = documents + list(documents_dict.values())
+            embeddings = self.embedding_func.func(all_documents)
+            logger.debug(f"[Request ID: {request_id}] Computed embeddings for inserted documents.")
 
-            # Example search with vectors and limit
-            search_query = "OpenAI"
-            # Example vector: random vector for demonstration; replace with actual vectors
-            search_vectors = [np.random.rand(self.embedding_func.embedding_dim)]
+            # Verify embedding dimensions
+            for idx, emb in enumerate(embeddings):
+                if len(emb) != self.embedding_func.embedding_dim:
+                    logger.error(f"[Request ID: {request_id}] Embedding for document {idx + 1} has incorrect dimensions: {len(emb)}. Expected: {self.embedding_func.embedding_dim}.")
+                    print(f"Error: Embedding for document {idx + 1} has incorrect dimensions.")
+                    return
+            logger.debug(f"[Request ID: {request_id}] All embeddings have correct dimensions.")
+
+            # Use the first embedding for querying
+            query_embedding = embeddings[0]
+            logger.debug(f"[Request ID: {request_id}] Using embedding of first document for query: {self._truncate_vector(query_embedding)}")
+
+            # Example vector search using the embedding of the first document
+            search_vectors = [query_embedding]
             search_limit = 5  # Example limit; adjust as needed
-            logger.debug(f"[Request ID: {request_id}] Starting search with query: '{search_query}', vectors: {search_vectors}, limit: {search_limit}")
-            search_response = await self.search_async(
-                query=search_query,
-                collection_name="default_collection",
+            logger.debug(f"[Request ID: {request_id}] Starting vector search with vectors: {self._truncate_vectors_for_logging(search_vectors)}, limit: {search_limit}")
+            vector_search_response = await self.vector_search_async(
                 vectors=search_vectors,
+                collection_name="default_collection",
                 limit=search_limit
             )
-            if isinstance(search_response, QueryResult):
-                if search_response.error:
-                    print(f"Search Error: {search_response.error}")
-                    logger.error(f"[Request ID: {request_id}] Search Error: {search_response.error}")
+            if isinstance(vector_search_response, QueryResult):
+                if vector_search_response.error:
+                    print(f"Vector Search Error: {vector_search_response.error}")
+                    logger.error(f"[Request ID: {request_id}] Vector Search Error: {vector_search_response.error}")
                 else:
-                    print("Search Response IDs after similarity filtering and limit:")
-                    print(search_response.ids)
-                    logger.info(f"[Request ID: {request_id}] Search Response IDs: {search_response.ids}")
+                    print("Vector Search Response IDs:")
+                    print(vector_search_response.ids)
+                    print("Vector Search Response Documents:")
+                    print(vector_search_response.documents)
+                    logger.info(f"[Request ID: {request_id}] Vector Search Response IDs: {vector_search_response.ids}")
             else:
-                print("No search results found.")
-                logger.warning(f"[Request ID: {request_id}] No search results found.")
+                print("No vector search results found.")
+                logger.warning(f"[Request ID: {request_id}] No vector search results found.")
+
+            # Perform a Controlled Test: Insert and Search a Known Document
+            logger.debug(f"[Request ID: {request_id}] Starting controlled test case.")
+            known_document = "This is a test document for LightRAG."
+            insert_success = await self.insert_async(items=known_document, collection_name="controlled_test_collection")
+            if insert_success:
+                logger.info(f"[Request ID: {request_id}] Controlled Test: Document inserted successfully.")
+                # Compute embedding
+                known_embedding = self.embedding_func.func([known_document])[0]
+                logger.debug(f"[Request ID: {request_id}] Controlled Test: Computed embedding for known document.")
+                # Perform search with the same embedding
+                search_result = await self.vector_search_async(
+                    vectors=[known_embedding],
+                    collection_name="controlled_test_collection",
+                    limit=1
+                )
+                if isinstance(search_result, QueryResult):
+                    if search_result.error:
+                        print(f"Controlled Test Vector Search Error: {search_result.error}")
+                        logger.error(f"[Request ID: {request_id}] Controlled Test Vector Search Error: {search_result.error}")
+                    else:
+                        print("Controlled Test Vector Search Response IDs:")
+                        print(search_result.ids)
+                        print("Controlled Test Vector Search Response Documents:")
+                        print(search_result.documents)
+                        logger.info(f"[Request ID: {request_id}] Controlled Test Vector Search Response IDs: {search_result.ids}")
+                else:
+                    print("Controlled Test: No vector search results found.")
+                    logger.warning(f"[Request ID: {request_id}] Controlled Test: No vector search results found.")
+            else:
+                logger.error(f"[Request ID: {request_id}] Controlled Test: Failed to insert document.")
 
             # Shutdown the client
             self.shutdown()
@@ -902,6 +1046,57 @@ class LightRAGClient:
             self.shutdown()
         except Exception:
             pass
+
+    # --------------------- Additional Validation Methods ---------------------
+    async def list_vectors_async(self, collection_name: str = "default") -> Optional[List[str]]:
+        """
+        Asynchronously list all vector IDs in the specified collection.
+
+        Args:
+            collection_name (str, optional): The name of the collection. Defaults to "default".
+
+        Returns:
+            Optional[List[str]]: List of vector IDs or None if an error occurs.
+        """
+        request_id = str(uuid.uuid4())
+        logger.debug(f"[Request ID: {request_id}] Starting list_vectors_async for collection '{collection_name}'")
+        try:
+            lightrag_instance = self.get_lightRAG_instance(collection_name)
+            vector_storage = getattr(lightrag_instance, 'chunks_vdb', None)
+            if vector_storage is None:
+                logger.error(f"[Request ID: {request_id}] Vector storage 'chunks_vdb' not found in collection '{collection_name}'.")
+                return None
+            # Assuming the vector storage client has a method to list vectors
+            all_vectors = await vector_storage._client.list_vectors()  # Adjust based on actual API
+            logger.debug(f"[Request ID: {request_id}] Retrieved vectors: {all_vectors}")
+            return all_vectors
+        except Exception as e:
+            logger.error(f"[Request ID: {request_id}] Failed to list vectors: {e}")
+            return None
+
+    async def list_documents_async(self, collection_name: str = "default") -> Optional[List[Dict[str, Any]]]:
+        """
+        Asynchronously list all documents in the specified collection.
+
+        Args:
+            collection_name (str, optional): The name of the collection. Defaults to "default".
+
+        Returns:
+            Optional[List[Dict[str, Any]]]: List of documents or None if an error occurs.
+        """
+        request_id = str(uuid.uuid4())
+        logger.debug(f"[Request ID: {request_id}] Starting list_documents_async for collection '{collection_name}'")
+        try:
+            lightrag_instance = self.get_lightRAG_instance(collection_name)
+            # Assuming the LightRAG instance has a method to list documents
+            all_documents = await lightrag_instance.alist_documents()  # Adjust based on actual API
+            logger.debug(f"[Request ID: {request_id}] Retrieved documents: {all_documents}")
+            return all_documents
+        except Exception as e:
+            logger.error(f"[Request ID: {request_id}] Failed to list documents: {e}")
+            return None
+
+    # --------------------- End of LightRAGClient Class ---------------------
 
 # --------------------- Conditional Main Execution ---------------------
 if __name__ == "__main__":
