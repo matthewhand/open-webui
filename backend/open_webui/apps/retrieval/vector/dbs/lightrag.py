@@ -1,65 +1,24 @@
 # lightrag.py
 
-import asyncio
 import os
-import threading
+import asyncio
 import uuid
-import numpy as np
 import json
-from dataclasses import dataclass, field, fields
+import numpy as np
+from typing import Optional, List, Dict, Any, Union
+from dataclasses import dataclass, field, fields  # Ensure 'fields' is imported
 from datetime import datetime
-from typing import Type, Optional, List, Dict, Union, Any
-from logging import getLogger, StreamHandler, Formatter, DEBUG, INFO, WARNING, ERROR
+from logging import getLogger, StreamHandler, Formatter, DEBUG
 
-# Import the necessary components from lightrag package
-from lightrag import LightRAG  # Ensure LightRAG is imported correctly
-from lightrag.llm import (
-    gpt_4o_mini_complete,
-    openai_embedding,
-)
-
-from lightrag.operate import (
-    chunking_by_token_size,
-    extract_entities,
-    local_query,
-    global_query,
-    hybrid_query,
-    naive_query,
-)
-from lightrag.utils import (
-    EmbeddingFunc,
-    compute_mdhash_id,
-    limit_async_func_call,
-    convert_response_to_json,
-    logger as lightrag_logger,
-    set_logger,
-)
-from lightrag.base import (
-    BaseGraphStorage,
-    BaseKVStorage,
-    BaseVectorStorage,
-    StorageNameSpace,
-    QueryParam,
-)
-from lightrag.storage import (
-    JsonKVStorage,
-    NanoVectorDBStorage,
-    NetworkXStorage,
-)
-from lightrag.kg.neo4j_impl import Neo4JStorage
-from lightrag.kg.oracle_impl import OracleKVStorage, OracleGraphStorage, OracleVectorDBStorage
-
-# Future KG integrations
-# from lightrag.kg.ArangoDB_impl import (
-#     GraphStorage as ArangoDBStorage
-# )
-
-# Install Pydantic before using it
+from lightrag import LightRAG, QueryParam
+from lightrag.llm import gpt_4o_mini_complete, openai_embedding
+from lightrag.utils import EmbeddingFunc, convert_response_to_json
 from pydantic import BaseModel
+import threading  # Corrected import for Thread
 
 # Initialize the main logger
-logger = getLogger("lightrag")
-logger.setLevel(DEBUG)  # Set default logging level to DEBUG for comprehensive logs
+logger = getLogger("lightrag_client")
+logger.setLevel(DEBUG)  # Set to DEBUG for detailed logs
 console_handler = StreamHandler()
 console_handler.setLevel(DEBUG)
 formatter = Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -71,65 +30,31 @@ else:
     logger.handlers.clear()
     logger.addHandler(console_handler)
 
+# Define the QueryResult using Pydantic
+class QueryResult(BaseModel):
+    ids: List[List[str]] = []
+    embeddings: Optional[List[List[float]]] = None
+    metadatas: Optional[List[List[Dict[str, Any]]]] = None
+    documents: Optional[List[List[str]]] = None
+    error: Optional[str] = None
 
-# Wrapper for embedding function
-def embedding_func_wrapper(texts: List[str], *args, **kwargs) -> List[np.ndarray]:
-    """
-    Wrapper for the embedding function.
+    class Config:
+        arbitrary_types_allowed = True
 
-    Parameters:
-    - texts: List of text strings to generate embeddings for.
-    - args, kwargs: Additional arguments for customization.
+    def dict(self, **kwargs):
+        """
+        Override dict() to handle numpy.ndarray serialization.
+        """
+        data = super().dict(**kwargs)
+        if self.embeddings is not None:
+            data['embeddings'] = [embedding for embedding in self.embeddings]
+        return data
 
-    Returns:
-    - List of embedding vectors as numpy arrays.
-    """
-    logger.debug(f"Embedding Function Wrapper called with texts: {texts}, args: {args}, kwargs: {kwargs}")
-    try:
-        embeddings = openai_embedding(texts, *args, **kwargs)
-        logger.debug(f"Embeddings generated: {embeddings}")
-        return embeddings
-    except Exception as e:
-        logger.error(f"Error in embedding_func_wrapper: {e}")
-        raise
-
-
-# Wrapper for LLM function
-def llm_func_wrapper(prompt: str, *args, **kwargs) -> str:
-    """
-    Wrapper for the LLM function.
-
-    Parameters:
-    - prompt: Input prompt for the language model.
-    - args, kwargs: Additional arguments for customization.
-
-    Returns:
-    - Response from the LLM as a string.
-    """
-    logger.debug(f"LLM Function Wrapper called with prompt: '{prompt}', args: {args}, kwargs: {kwargs}")
-    try:
-        response = gpt_4o_mini_complete(prompt, *args, **kwargs)
-        # Validate if response is valid JSON
-        try:
-            json_response = json.loads(response)
-            logger.debug(f"LLM Response (JSON): {json_response}")
-            return response
-        except json.JSONDecodeError:
-            error_msg = "LLM did not return a valid JSON response."
-            logger.error(f"LLM Response Parsing Error: {error_msg}. Response: {response}")
-            return json.dumps({"error": error_msg})
-    except Exception as e:
-        logger.error(f"Error in llm_func_wrapper: {e}")
-        return json.dumps({"error": "Internal error during LLM processing."})
-
-
+# AsyncRunner to run coroutines in synchronous methods
 class AsyncRunner:
-    """
-    A helper class to run asynchronous coroutines from synchronous methods using a background event loop.
-    """
     def __init__(self):
         self.loop = asyncio.new_event_loop()
-        self.thread = threading.Thread(target=self._start_loop, daemon=True)
+        self.thread = threading.Thread(target=self._start_loop, daemon=True)  # Corrected to use threading.Thread
         self.thread.start()
         logger.debug("AsyncRunner initialized with a new event loop.")
 
@@ -168,30 +93,6 @@ class AsyncRunner:
         self.thread.join()
         logger.info("AsyncRunner shutdown successfully.")
 
-
-class QueryResult(BaseModel):
-    """
-    Pydantic model to store query results.
-    """
-    ids: List[List[str]] = []
-    embeddings: Optional[List[List[float]]] = None
-    metadatas: Optional[List[List[Dict[str, Any]]]] = None
-    documents: Optional[List[List[str]]] = None
-    error: Optional[str] = None
-
-    class Config:
-        arbitrary_types_allowed = True
-
-    def dict(self, **kwargs):
-        """
-        Override dict() to handle numpy.ndarray serialization.
-        """
-        data = super().dict(**kwargs)
-        if self.embeddings is not None:
-            data['embeddings'] = [embedding for embedding in self.embeddings]
-        return data
-
-
 @dataclass
 class LightRAGClient:
     """
@@ -200,9 +101,6 @@ class LightRAGClient:
     working_dir: str = field(
         default_factory=lambda: f"./lightrag_cache_{datetime.now().strftime('%Y-%m-%d-%H:%M:%S')}"
     )
-    kv_storage: str = field(default="JsonKVStorage")
-    vector_storage: str = field(default="NanoVectorDBStorage")
-    graph_storage: str = field(default="NetworkXStorage")
     log_level: int = field(default=DEBUG)  # Default to DEBUG for detailed logs
 
     # Text chunking
@@ -231,9 +129,9 @@ class LightRAGClient:
     embedding_func: EmbeddingFunc = field(default_factory=lambda: EmbeddingFunc(
         embedding_dim=1536,
         max_token_size=8192,
-        func=embedding_func_wrapper
+        func=lambda texts: openai_embedding(texts)
     ))
-    llm_model_func: callable = field(default_factory=lambda: llm_func_wrapper)
+    llm_model_func: callable = field(default_factory=lambda: gpt_4o_mini_complete)
 
     embedding_batch_num: int = 32
     embedding_func_max_async: int = 16
@@ -242,7 +140,6 @@ class LightRAGClient:
     llm_model_kwargs: Dict = field(default_factory=dict)
 
     # Storage
-    vector_db_storage_cls_kwargs: Dict = field(default_factory=dict)
     enable_llm_cache: bool = True
 
     # Extension
@@ -281,29 +178,6 @@ class LightRAGClient:
         }
         config_dict = {f.name: getattr(self, f.name) for f in fields(self) if f.name not in exclude_fields}
         return config_dict
-
-    def _get_storage_class(self) -> Dict[str, Type]:
-        """
-        Retrieve a dictionary mapping storage class names to their corresponding classes.
-
-        Returns:
-            Dict[str, Type]: Mapping of storage class names to classes.
-        """
-        storage_classes = {
-            # KV storage
-            "JsonKVStorage": JsonKVStorage,
-            "OracleKVStorage": OracleKVStorage,
-            # Vector storage
-            "NanoVectorDBStorage": NanoVectorDBStorage,
-            "OracleVectorDBStorage": OracleVectorDBStorage,
-            # Graph storage
-            "NetworkXStorage": NetworkXStorage,
-            "Neo4JStorage": Neo4JStorage,
-            "OracleGraphStorage": OracleGraphStorage,
-            # "ArangoDBStorage": ArangoDBStorage  # Uncomment if needed
-        }
-        logger.debug(f"Storage classes available: {list(storage_classes.keys())}")
-        return storage_classes
 
     def has_collection(self, collection_name: str) -> bool:
         """
@@ -358,38 +232,11 @@ class LightRAGClient:
             raise
 
         if collection_name not in self.collections:
-            # Initialize a new LightRAG instance for the collection
-            storage_classes = self._get_storage_class()
-
-            # Instantiate storage classes based on the specified storage class names
-            kv_storage_cls = storage_classes.get(self.kv_storage)
-            vector_storage_cls = storage_classes.get(self.vector_storage)
-            graph_storage_cls = storage_classes.get(self.graph_storage)
-
-            if not kv_storage_cls:
-                logger.error(f"KV Storage class '{self.kv_storage}' not found.")
-                raise ValueError(f"KV Storage class '{self.kv_storage}' not found.")
-            if not vector_storage_cls:
-                logger.error(f"Vector Storage class '{self.vector_storage}' not found.")
-                raise ValueError(f"Vector Storage class '{self.vector_storage}' not found.")
-            if not graph_storage_cls:
-                logger.error(f"Graph Storage class '{self.graph_storage}' not found.")
-                raise ValueError(f"Graph Storage class '{self.graph_storage}' not found.")
-
-            try:
-                kv_storage_instance = kv_storage_cls(**self.vector_db_storage_cls_kwargs)
-                vector_storage_instance = vector_storage_cls(**self.vector_db_storage_cls_kwargs)
-                graph_storage_instance = graph_storage_cls(**self.vector_db_storage_cls_kwargs)
-            except Exception as e:
-                logger.error(f"Error initializing storage classes: {e}")
-                raise
-
             try:
                 lightrag_instance = LightRAG(
                     working_dir=collection_working_dir,
-                    kv_storage=kv_storage_instance,
-                    vector_storage=vector_storage_instance,
-                    graph_storage=graph_storage_instance,
+                    llm_model_func=self.llm_model_func,
+                    embedding_func=self.embedding_func,
                     log_level=self.log_level,
                     chunk_token_size=self.chunk_token_size,
                     chunk_overlap_token_size=self.chunk_overlap_token_size,
@@ -398,14 +245,11 @@ class LightRAGClient:
                     entity_summary_to_max_tokens=self.entity_summary_to_max_tokens,
                     node_embedding_algorithm=self.node_embedding_algorithm,
                     node2vec_params=self.node2vec_params,
-                    embedding_func=self.embedding_func,
-                    llm_model_func=self.llm_model_func,
                     embedding_batch_num=self.embedding_batch_num,
                     embedding_func_max_async=self.embedding_func_max_async,
                     llm_model_max_token_size=self.llm_model_max_token_size,
                     llm_model_max_async=self.llm_model_max_async,
                     llm_model_kwargs=self.llm_model_kwargs,
-                    vector_db_storage_cls_kwargs=self.vector_db_storage_cls_kwargs,
                     enable_llm_cache=self.enable_llm_cache,
                     addon_params=self.addon_params,
                     convert_response_to_json_func=self.convert_response_to_json_func,
@@ -485,6 +329,37 @@ class LightRAGClient:
             logger.debug(f"[Request ID: {request_id}] Completed insert_async.")
             if self.has_collection(collection_name):
                 await self._insert_done(collection_name)
+
+    # --------------------- Synchronous Methods ---------------------
+
+    def insert(
+        self,
+        items: Union[str, List[str], Dict],
+        *,
+        collection_name: str = "default"
+    ) -> bool:
+        """
+        Synchronously insert documents into the specified collection.
+
+        Args:
+            items (Union[str, List[str], Dict]): The text(s) to insert.
+            collection_name (str, optional): The name of the collection. Defaults to "default".
+
+        Returns:
+            bool: True if insertion was successful, False otherwise.
+        """
+        request_id = str(uuid.uuid4())
+        logger.debug(f"[Request ID: {request_id}] Calling synchronous insert with items: {items}, collection_name: '{collection_name}'")
+        try:
+            result = self.async_runner.run(
+                self.insert_async(items=items, collection_name=collection_name),
+                request_id
+            )
+            logger.debug(f"[Request ID: {request_id}] Synchronous insert result: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"[Request ID: {request_id}] Runtime error during synchronous insert: {e}")
+            return False
 
     async def query_async(
         self,
@@ -586,7 +461,40 @@ class LightRAGClient:
             logger.debug(f"[Request ID: {request_id}] Completed query_async.")
             await self._query_done(collection_name)
 
-    # --------------------- New Vector Search Methods ---------------------
+    def query(
+        self,
+        query: str = "",
+        *,
+        collection_name: str = "default",
+        param: QueryParam = QueryParam(),
+        filter: Optional[Dict] = None
+    ) -> Optional[QueryResult]:
+        """
+        Synchronously query the specified collection.
+
+        Args:
+            query (str, optional): The query string. Defaults to an empty string.
+            collection_name (str, optional): The name of the collection. Defaults to "default".
+            param (QueryParam, optional): Query parameters. Defaults to QueryParam().
+            filter (Optional[Dict], optional): Filter criteria for the query. Defaults to None.
+
+        Returns:
+            Optional[QueryResult]: The query result or an error message encapsulated in QueryResult.
+        """
+        request_id = str(uuid.uuid4())
+        logger.debug(f"[Request ID: {request_id}] Calling synchronous query with query: '{query}', collection_name: '{collection_name}', param: {param}, filter: {filter}")
+        try:
+            result = self.async_runner.run(
+                self.query_async(query=query, collection_name=collection_name, param=param, filter=filter),
+                request_id
+            )
+            logger.debug(f"[Request ID: {request_id}] Synchronous query result: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"[Request ID: {request_id}] Runtime error during synchronous query: {e}")
+            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Runtime error during query.")
+
+    # --------------------- Vector Search Methods ---------------------
 
     async def vector_search_async(
         self,
@@ -611,7 +519,11 @@ class LightRAGClient:
 
         try:
             lightrag_instance = self.get_lightRAG_instance(collection_name)
-            vector_storage = lightrag_instance.vector_storage  # Corrected attribute access
+            # Assuming LightRAG has a 'vector_storage' attribute
+            vector_storage = getattr(lightrag_instance, 'vector_storage', None)
+            if vector_storage is None:
+                logger.error(f"[Request ID: {request_id}] LightRAG instance does not have 'vector_storage' attribute.")
+                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Vector storage not initialized.")
 
             # Initialize lists to collect results
             all_doc_ids = []
@@ -776,61 +688,33 @@ class LightRAGClient:
             logger.error(f"[Request ID: {request_id}] Runtime error during synchronous search: {e}")
             return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Runtime error during synchronous search.")
 
-    # --------------------- Synchronous Methods ---------------------
+    # --------------------- Deletion Methods ---------------------
 
-    def insert(self, items: Union[str, List[str], Dict], *, collection_name: str = "default") -> bool:
+    async def delete_by_entity_async(self, entity_name: str, *, collection_name: str = "default") -> bool:
         """
-        Synchronously insert documents into the specified collection.
+        Asynchronously delete an entity and its relationships from the specified collection.
 
         Args:
-            items (Union[str, List[str], Dict]): The text(s) to insert.
+            entity_name (str): The name of the entity to delete.
             collection_name (str, optional): The name of the collection. Defaults to "default".
 
         Returns:
-            bool: True if insertion was successful, False otherwise.
+            bool: True if deletion was successful, False otherwise.
         """
         request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Calling synchronous insert with items: {items}, collection_name: '{collection_name}'")
+        logger.debug(f"[Request ID: {request_id}] Starting delete_by_entity_async with entity_name: '{entity_name}', collection_name: '{collection_name}'")
+
         try:
-            result = self.async_runner.run(self.insert_async(items, collection_name=collection_name), request_id)
-            logger.debug(f"[Request ID: {request_id}] Synchronous insert result: {result}")
-            return result
+            lightrag_instance = self.get_lightRAG_instance(collection_name)
+            await lightrag_instance.adelete_by_entity(entity_name)
+            logger.debug(f"[Request ID: {request_id}] Successfully deleted entity '{entity_name}' from collection '{collection_name}'.")
+            return True
         except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Runtime error during synchronous insert: {e}")
+            logger.error(f"[Request ID: {request_id}] Failed to delete entity '{entity_name}' from collection '{collection_name}': {e}")
             return False
-
-    def query(
-        self,
-        query: str = "",
-        *,
-        collection_name: str = "default",
-        param: QueryParam = QueryParam(),
-        filter: Optional[Dict] = None
-    ) -> Optional[QueryResult]:
-        """
-        Synchronously query the specified collection.
-
-        Args:
-            query (str, optional): The query string. Defaults to an empty string.
-            collection_name (str, optional): The name of the collection. Defaults to "default".
-            param (QueryParam, optional): Query parameters. Defaults to QueryParam().
-            filter (Optional[Dict], optional): Filter criteria for the query. Defaults to None.
-
-        Returns:
-            Optional[QueryResult]: The query result encapsulated in QueryResult.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Calling synchronous query with query: '{query}', collection_name: '{collection_name}', param: {param}, filter: {filter}")
-        try:
-            result = self.async_runner.run(
-                self.query_async(query=query, collection_name=collection_name, param=param, filter=filter),
-                request_id
-            )
-            logger.debug(f"[Request ID: {request_id}] Synchronous query result: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Runtime error during synchronous query: {e}")
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, error="Runtime error during synchronous query.")
+        finally:
+            logger.debug(f"[Request ID: {request_id}] Completed delete_by_entity_async.")
+            await self._delete_by_entity_done(collection_name)
 
     def delete_by_entity(self, entity_name: str, *, collection_name: str = "default") -> bool:
         """
@@ -857,61 +741,6 @@ class LightRAGClient:
             return False
 
     # --------------------- Helper Methods ---------------------
-
-    def _get_document_embeddings(self, doc_ids: List[str], collection_name: str) -> List[np.ndarray]:
-        """
-        Retrieve embeddings for the given document IDs.
-
-        Args:
-            doc_ids (List[str]): List of document IDs.
-            collection_name (str): Name of the collection.
-
-        Returns:
-            List[np.ndarray]: List of document embeddings.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Retrieving embeddings for document IDs: {doc_ids} from collection '{collection_name}'")
-        embeddings = []
-        lightrag_instance = self.get_lightRAG_instance(collection_name)
-        for doc_id in doc_ids:
-            try:
-                embedding = lightrag_instance.vector_storage.get_embedding(doc_id)  # Ensure this method exists
-                if embedding is not None:
-                    embeddings.append(embedding)
-                    logger.debug(f"[Request ID: {request_id}] Retrieved embedding for doc_id '{doc_id}': {embedding}")
-                else:
-                    logger.warning(f"[Request ID: {request_id}] Embedding not found for document ID: {doc_id}. Using zero vector.")
-                    embeddings.append(np.zeros(self.embedding_func.embedding_dim))
-            except Exception as e:
-                logger.error(f"[Request ID: {request_id}] Error retrieving embedding for doc_id '{doc_id}': {e}")
-                embeddings.append(np.zeros(self.embedding_func.embedding_dim))
-        logger.debug(f"[Request ID: {request_id}] Retrieved {len(embeddings)} embeddings for documents.")
-        return embeddings
-
-    def _cosine_similarity(self, vec1: np.ndarray, vec2: np.ndarray) -> float:
-        """
-        Compute cosine similarity between two vectors.
-
-        Args:
-            vec1 (np.ndarray): First vector.
-            vec2 (np.ndarray): Second vector.
-
-        Returns:
-            float: Cosine similarity.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Computing cosine similarity between vectors.")
-        if not isinstance(vec1, np.ndarray) or not isinstance(vec2, np.ndarray):
-            logger.warning(f"[Request ID: {request_id}] One or both vectors are not numpy arrays.")
-            return 0.0
-        norm1 = np.linalg.norm(vec1)
-        norm2 = np.linalg.norm(vec2)
-        if norm1 == 0 or norm2 == 0:
-            logger.warning(f"[Request ID: {request_id}] One or both vectors have zero magnitude.")
-            return 0.0
-        similarity = np.dot(vec1, vec2) / (norm1 * norm2)
-        logger.debug(f"[Request ID: {request_id}] Computed cosine similarity: {similarity}")
-        return similarity
 
     async def _query_done(self, collection_name: str):
         """
@@ -1062,34 +891,6 @@ class LightRAGClient:
             logger.info(f"[Request ID: {request_id}] LightRAGClient shutdown successfully.")
 
         asyncio.run(main())
-
-    # --------------------- Deletion Methods ---------------------
-
-    async def delete_by_entity_async(self, entity_name: str, *, collection_name: str = "default") -> bool:
-        """
-        Asynchronously delete an entity and its relationships from the specified collection.
-
-        Args:
-            entity_name (str): The name of the entity to delete.
-            collection_name (str, optional): The name of the collection. Defaults to "default".
-
-        Returns:
-            bool: True if deletion was successful, False otherwise.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Starting delete_by_entity_async with entity_name: '{entity_name}', collection_name: '{collection_name}'")
-
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance.adelete_by_entity(entity_name)
-            logger.debug(f"[Request ID: {request_id}] Successfully deleted entity '{entity_name}' from collection '{collection_name}'.")
-            return True
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Failed to delete entity '{entity_name}' from collection '{collection_name}': {e}")
-            return False
-        finally:
-            logger.debug(f"[Request ID: {request_id}] Completed delete_by_entity_async.")
-            await self._delete_by_entity_done(collection_name)
 
     # --------------------- Shutdown on Exit ---------------------
 
