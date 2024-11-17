@@ -5,7 +5,7 @@ import asyncio
 import uuid
 import json
 import numpy as np
-from typing import Optional, List, Dict, Any, Union
+from typing import Optional, List, Dict, Any, Union, Callable
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from logging import getLogger, StreamHandler, Formatter, DEBUG
@@ -137,9 +137,9 @@ class LightRAGClient:
     embedding_func: EmbeddingFunc = field(default_factory=lambda: EmbeddingFunc(
         embedding_dim=1536,
         max_token_size=8192,
-        func=lambda texts: openai_embedding(texts)
+        func=openai_embedding  # Direct reference instead of a lambda
     ))
-    llm_model_func: callable = field(default_factory=lambda: gpt_4o_mini_complete)
+    llm_model_func: Callable = field(default_factory=lambda: gpt_4o_mini_complete)
 
     embedding_batch_num: int = 32
     embedding_func_max_async: int = 16
@@ -152,7 +152,7 @@ class LightRAGClient:
 
     # Extension
     addon_params: Dict = field(default_factory=dict)
-    convert_response_to_json_func: callable = convert_response_to_json
+    convert_response_to_json_func: Callable = convert_response_to_json
 
     # Storage Instances (Initialized in __post_init__)
     collections: Dict[str, 'LightRAG'] = field(default_factory=dict, init=False)
@@ -532,111 +532,22 @@ class LightRAGClient:
             logger.error(f"[Request ID: {request_id}] Runtime error during synchronous query: {e}")
             return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Runtime error during query.")
 
-    # --------------------- Search Methods ---------------------
-
-    async def search_async(
-        self,
-        query: Optional[str] = None,
-        *,
-        collection_name: str = "default",
-        mode: Optional[str] = None,
-        vectors: Optional[List[np.ndarray]] = None,
-        limit: Optional[int] = None
-    ) -> Optional[QueryResult]:
-        """
-        Asynchronous search handler.
-        Redirects to `vector_search_async` if vectors are provided, or performs a query-based search otherwise.
-
-        Args:
-            query (Optional[str], optional): The query string. Defaults to None.
-            collection_name (str, optional): The name of the collection. Defaults to "default".
-            mode (Optional[str], optional): The search mode for query-based searches. Defaults to None.
-            vectors (Optional[List[np.ndarray]], optional): List of query vectors for similarity search. Defaults to None.
-            limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to None.
-
-        Returns:
-            Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, distances, or an error message encapsulated in QueryResult.
-        """
-        request_id = str(uuid.uuid4())
-        # Truncate vectors for logging
-        truncated_vectors = self._truncate_vectors_for_logging(vectors)
-        logger.debug(f"[Request ID: {request_id}] Starting search_async with query: '{query}', vectors: {truncated_vectors}, mode: '{mode}', limit: {limit}, collection_name: '{collection_name}'")
-
-        try:
-            if vectors:
-                logger.debug(f"[Request ID: {request_id}] Vectors provided. Redirecting to vector_search_async.")
-                return await self.vector_search_async(vectors, collection_name=collection_name, limit=limit)
-            elif query:
-                logger.debug(f"[Request ID: {request_id}] Query provided. Redirecting to query_async.")
-                param = QueryParam(mode=mode) if mode else QueryParam()
-                return await self.query_async(query=query, collection_name=collection_name, param=param, filter=None)
-            else:
-                error_msg = "Either `query` or `vectors` must be provided for search."
-                logger.error(f"[Request ID: {request_id}] {error_msg}")
-                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Search failed with error: {e}")
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Internal server error during search.")
-        finally:
-            logger.debug(f"[Request ID: {request_id}] Completed search_async.")
-            await self._query_done(collection_name)
-
-    def search(
-        self,
-        query: Optional[str] = None,
-        *,
-        collection_name: str = "default",
-        mode: Optional[str] = None,
-        vectors: Optional[List[np.ndarray]] = None,
-        limit: Optional[int] = None
-    ) -> Optional[QueryResult]:
-        """
-        Synchronously search the specified collection with optional vectors for similarity filtering and limit.
-
-        Args:
-            query (Optional[str], optional): The query string. Defaults to None.
-            collection_name (str, optional): The name of the collection. Defaults to "default".
-            mode (Optional[str], optional): The search mode for query-based searches. Defaults to None.
-            vectors (Optional[List[np.ndarray]], optional): List of query vectors for similarity search. Defaults to None.
-            limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to None.
-
-        Returns:
-            Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, distances, or an error message encapsulated in QueryResult.
-        """
-        request_id = str(uuid.uuid4())
-        if query is None and not vectors:
-            error_msg = "search() requires either a `query` or `vectors` argument."
-            logger.error(f"[Request ID: {request_id}] {error_msg}")
-            raise ValueError(error_msg)
-
-        # Truncate vectors for logging
-        truncated_vectors = self._truncate_vectors_for_logging(vectors)
-        logger.debug(f"[Request ID: {request_id}] Calling synchronous search with query: '{query}', vectors: {truncated_vectors}, mode: '{mode}', collection_name: '{collection_name}', limit: {limit}")
-        try:
-            return self.async_runner.run(
-                self.search_async(query=query, collection_name=collection_name, mode=mode, vectors=vectors, limit=limit),
-                request_id
-            )
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Runtime error during synchronous search: {e}")
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Runtime error during search.")
-
     # --------------------- Vector Search Methods ---------------------
 
     async def vector_search_async(
         self,
-        vectors: List[Union[np.ndarray, list]],
+        vectors: List[Union[List[float], list]],
         *,
         collection_name: str = "default",
-        limit: Optional[int] = None
+        limit: Optional[int] = 5
     ) -> Optional[QueryResult]:
         """
-        Asynchronously perform vector search on the specified collection using LightRAG's vector storage.
+        Asynchronously perform vector search on the specified collection.
 
         Args:
-            vectors (List[Union[np.ndarray, list]]): List of query vectors.
+            vectors (List[Union[List[float], list]]): List of query vectors.
             collection_name (str, optional): The name of the collection. Defaults to "default".
-            limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to None.
+            limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to 5.
 
         Returns:
             Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, distances, or an error message encapsulated in QueryResult.
@@ -665,10 +576,7 @@ class LightRAGClient:
                 logger.debug(f"[Request ID: {request_id}] Processing vector {idx + 1}/{len(vectors)}: {truncated_vector}")
                 try:
                     # Ensure the vector is in list format and has correct dimensions
-                    if isinstance(vector, np.ndarray):
-                        query_vector = vector.tolist()
-                        logger.debug(f"[Request ID: {request_id}] Converted numpy array to list for vector {idx + 1}")
-                    elif isinstance(vector, list):
+                    if isinstance(vector, (list, tuple)):
                         query_vector = vector
                         logger.debug(f"[Request ID: {request_id}] Vector {idx + 1} is already a list.")
                     else:
@@ -695,10 +603,10 @@ class LightRAGClient:
                     logger.debug(f"[Request ID: {request_id}] Query Vector {idx + 1}: {self._truncate_vector(query_vector)}")
 
                     # Perform similarity search using the vector storage's query method
-                    search_results = vector_storage._client.query(
+                    search_results = await vector_storage._client.query(
                         query=query_vector,
-                        top_k=limit or 5,
-                        better_than_threshold=0.0,  # Temporarily set to 0.0 to include all results
+                        top_k=limit,
+                        better_than_threshold=0.0  # Temporarily set to 0.0 to include all results
                     )
                     logger.debug(f"[Request ID: {request_id}] Retrieved {len(search_results)} results for vector {idx + 1}")
 
@@ -743,18 +651,18 @@ class LightRAGClient:
 
     def vector_search(
         self,
-        vectors: List[Union[np.ndarray, list]],
+        vectors: List[Union[List[float], list]],
         *,
         collection_name: str = "default",
-        limit: Optional[int] = None
+        limit: Optional[int] = 5
     ) -> Optional[QueryResult]:
         """
         Synchronously perform vector search on the specified collection.
 
         Args:
-            vectors (List[Union[np.ndarray, list]]): List of query vectors.
+            vectors (List[Union[List[float], list]]): List of query vectors.
             collection_name (str, optional): The name of the collection. Defaults to "default".
-            limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to None.
+            limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to 5.
 
         Returns:
             Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, distances, or an error message encapsulated in QueryResult.
@@ -771,143 +679,6 @@ class LightRAGClient:
         except Exception as e:
             logger.error(f"[Request ID: {request_id}] Runtime error during synchronous vector search: {e}")
             return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Runtime error during vector search.")
-
-    # --------------------- Deletion Methods ---------------------
-
-    async def delete_by_entity_async(self, entity_name: str, *, collection_name: str = "default") -> bool:
-        """
-        Asynchronously delete an entity and its relationships from the specified collection.
-
-        Args:
-            entity_name (str): The name of the entity to delete.
-            collection_name (str, optional): The name of the collection. Defaults to "default".
-
-        Returns:
-            bool: True if deletion was successful, False otherwise.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Starting delete_by_entity_async with entity_name: '{entity_name}', collection_name: '{collection_name}'")
-
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance.adelete_by_entity(entity_name)
-            logger.debug(f"[Request ID: {request_id}] Successfully deleted entity '{entity_name}' from collection '{collection_name}'.")
-            return True
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Failed to delete entity '{entity_name}' from collection '{collection_name}': {e}")
-            return False
-        finally:
-            logger.debug(f"[Request ID: {request_id}] Completed delete_by_entity_async.")
-            await self._delete_by_entity_done(collection_name)
-
-    def delete_by_entity(self, entity_name: str, *, collection_name: str = "default") -> bool:
-        """
-        Synchronously delete an entity and its relationships from the specified collection.
-
-        Args:
-            entity_name (str): The name of the entity to delete.
-            collection_name (str, optional): The name of the collection. Defaults to "default".
-
-        Returns:
-            bool: True if deletion was successful, False otherwise.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Calling synchronous delete_by_entity with entity_name: '{entity_name}', collection_name: '{collection_name}'")
-        try:
-            result = self.async_runner.run(
-                self.delete_by_entity_async(entity_name, collection_name=collection_name),
-                request_id
-            )
-            logger.debug(f"[Request ID: {request_id}] Synchronous delete_by_entity result: {result}")
-            return result
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Runtime error during synchronous deletion: {e}")
-            return False
-
-    # --------------------- Helper Methods ---------------------
-
-    def _truncate_vector(self, vector: Union[np.ndarray, list], max_elements: int = 3) -> str:
-        """
-        Truncate a vector to the first 'max_elements' elements for logging purposes.
-
-        Args:
-            vector (Union[np.ndarray, list]): The vector to truncate.
-            max_elements (int, optional): Number of elements to keep. Defaults to 3.
-
-        Returns:
-            str: Truncated vector as a string.
-        """
-        if isinstance(vector, np.ndarray):
-            vector = vector.tolist()
-        if isinstance(vector, list):
-            if len(vector) > max_elements:
-                return f"{vector[:max_elements]}..."
-            else:
-                return str(vector)
-        return str(vector)
-
-    def _truncate_vectors_for_logging(self, vectors: Optional[List[Union[np.ndarray, list]]], max_elements: int = 3) -> Optional[List[str]]:
-        """
-        Truncate all vectors in a list for logging purposes.
-
-        Args:
-            vectors (Optional[List[Union[np.ndarray, list]]]): List of vectors to truncate.
-            max_elements (int, optional): Number of elements to keep in each vector. Defaults to 3.
-
-        Returns:
-            Optional[List[str]]: List of truncated vectors as strings.
-        """
-        if vectors is None:
-            return None
-        return [self._truncate_vector(v, max_elements) for v in vectors]
-
-    async def _query_done(self, collection_name: str):
-        """
-        Handle post-query operations.
-
-        Args:
-            collection_name (str): The name of the collection.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Starting _query_done for collection '{collection_name}'")
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance._query_done()
-            logger.debug(f"[Request ID: {request_id}] Completed query operations for collection '{collection_name}'.")
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Error in _query_done for collection '{collection_name}': {e}")
-
-    async def _insert_done(self, collection_name: str):
-        """
-        Handle post-insertion operations.
-
-        Args:
-            collection_name (str): The name of the collection.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Starting _insert_done for collection '{collection_name}'")
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance._insert_done()
-            logger.debug(f"[Request ID: {request_id}] Completed insert operations for collection '{collection_name}'.")
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Error in _insert_done for collection '{collection_name}': {e}")
-
-    async def _delete_by_entity_done(self, collection_name: str):
-        """
-        Handle post-deletion operations.
-
-        Args:
-            collection_name (str): The name of the collection.
-        """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"[Request ID: {request_id}] Starting _delete_by_entity_done for collection '{collection_name}'")
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance._delete_by_entity_done()
-            logger.debug(f"[Request ID: {request_id}] Completed delete operations for collection '{collection_name}'.")
-        except Exception as e:
-            logger.error(f"[Request ID: {request_id}] Error in _delete_by_entity_done for collection '{collection_name}': {e}")
 
     # --------------------- Shutdown Method ---------------------
 
@@ -1097,10 +868,3 @@ class LightRAGClient:
             return None
 
     # --------------------- End of LightRAGClient Class ---------------------
-
-# --------------------- Conditional Main Execution ---------------------
-if __name__ == "__main__":
-    # Only run the example if the environment variable RUN_LIGHTRAG_MAIN is set to "1"
-    if os.getenv("RUN_LIGHTRAG_MAIN") == "1":
-        client = LightRAGClient()
-        client.run_example()
