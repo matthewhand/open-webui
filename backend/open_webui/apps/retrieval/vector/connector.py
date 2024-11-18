@@ -10,7 +10,7 @@ elif VECTOR_DB == "qdrant":
     VECTOR_DB_CLIENT = QdrantClient()
 
 elif VECTOR_DB == "lightrag":
-    from open_webui.apps.retrieval.vector.dbs.lightrag import LightRAGClient
+    from open_webui.apps.retrieval.vector.dbs.lightrag_client import LightRAGClient
     VECTOR_DB_CLIENT = LightRAGClient()
 
 else:

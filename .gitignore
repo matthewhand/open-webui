@@ -309,3 +309,5 @@ cypress/screenshots
 .vscode/settings.json
 
 ollama-data
+
+lightrag_cache*

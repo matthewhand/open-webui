@@ -1,10 +1,11 @@
 # lightrag_search.py
 
 import uuid
+import json
 from typing import Optional, List, Dict, Any, Union
 from logging import getLogger, DEBUG
 
-from lightrag import LightRAG
+from backend.open_webui.apps.retrieval.vector.dbs.lightrag_client import LightRAG, QueryParam
 from open_webui.apps.retrieval.vector.dbs.lightrag_utils import QueryResult, EmbeddingFunc
 
 logger = getLogger("lightrag_search")
@@ -74,6 +75,7 @@ class SearchHandler:
 
                 logger.debug(f"[Request ID: {request_id}] Performing query with filter: {filter}")
                 response = await lightrag_instance.aquery(query, param)
+
                 logger.debug(f"[Request ID: {request_id}] Received response from aquery with filter: {response} (type: {type(response)})")
 
                 # Check if response has 'ids' attribute
@@ -145,90 +147,76 @@ class SearchHandler:
                     error_msg = "Unexpected response format from query."
                     logger.error(f"[Request ID: {request_id}] {error_msg} Response type: {type(response)}. Content: {response}")
                     return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-    ```
+        except Exception as e:
+            logger.exception(f"[Request ID: {request_id}] Exception during query_async: {e}")
+            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=str(e))
 
-### **Explanation of Changes:**
+    async def vector_search_async(
+        self,
+        vectors: List[Union[List[float], list]],
+        *,
+        collection_name: str = "default",
+        limit: Optional[int] = 5
+    ) -> Optional[QueryResult]:
+        """
+        Asynchronously perform vector search on the specified collection.
 
-1. **Maintained Separate `query_async` and `query` Methods:**
-   - **`query_async`:** Handles string-based queries with optional `filter`.
-   - **`query`:** Synchronously calls `query_async`.
+        Args:
+            vectors (List[Union[List[float], list]]): List of query vectors.
+            collection_name (str, optional): The name of the collection. Defaults to "default".
+            limit (Optional[int], optional): Maximum number of results to return per vector. Defaults to 5.
 
-2. **Ensured `query_async` Does Not Require `vectors`:**
-   - The `query_async` method focuses solely on string-based queries, ensuring that it doesn't expect `vectors` as an argument.
+        Returns:
+            Optional[QueryResult]: The search result.
+        """
+        request_id = str(uuid.uuid4())
+        logger.debug(f"[Request ID: {request_id}] Starting vector_search_async with vectors: {vectors}, collection_name: '{collection_name}', limit: {limit}")
 
-3. **Maintained `filter` Functionality:**
-   - The `filter` parameter is optional and integrated into the `query_async` method to refine search results.
+        try:
+            lightrag_instance = self.client.get_lightRAG_instance(collection_name)
 
-4. **Removed `filter` from `query_async` in Previous Responses:**
-   - Ensured that `filter` remains within `query_async` without affecting the `vector_search` methods.
+            # Validate vectors
+            if not isinstance(vectors, list) or not all(isinstance(vec, (list, tuple)) for vec in vectors):
+                error_msg = "Vectors must be a list of lists or tuples of floats."
+                logger.error(f"[Request ID: {request_id}] {error_msg} Received type: {type(vectors)} with elements types: {[type(vec) for vec in vectors]}")
+                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
 
----
+            if not vectors:
+                error_msg = "Vectors list cannot be empty."
+                logger.warning(f"[Request ID: {request_id}] {error_msg}")
+                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
 
-## **3. Review and Update All Calls to `query` and `vector_search`**
+            logger.debug(f"[Request ID: {request_id}] Performing vector search with limit: {limit}")
+            response = await lightrag_instance.avector_search(vectors, limit=limit)
+            logger.debug(f"[Request ID: {request_id}] Received vector search response: {response} (type: {type(response)})")
 
-Now that the `query` and `vector_search` methods are separated, ensure that all parts of your codebase use them appropriately.
+            # Check if response has 'ids' attribute
+            if hasattr(response, 'ids') and response.ids and len(response.ids) > 0:
+                logger.debug(f"[Request ID: {request_id}] Returning QueryResult with IDs: {response.ids}")
+                # Calculate distances if necessary; for now, use placeholders
+                distances = [[0.0 for _ in ids] for ids in response.ids]  # Placeholder distances
 
-### **Example Update in `main.py`**
+                # Fetch documents and metadata for each list of IDs
+                documents = []
+                metadatas = []
+                for id_list in response.ids:
+                    docs = await lightrag_instance.afetch_documents(id_list)
+                    metas = await lightrag_instance.afetch_metadatas(id_list)
+                    documents.append(docs)
+                    metadatas.append(metas)
 
-Assuming you have a function `save_docs_to_vector_db` that interacts with the vector DB, update it as follows:
-
-```python
-# main.py
-
-from open_webui.apps.retrieval.vector.dbs.lightrag import LightRAGClient
-from open_webui.apps.retrieval.vector.dbs.lightrag_utils import QueryResult
-from fastapi import HTTPException
-
-# Initialize the client
-VECTOR_DB_CLIENT = LightRAGClient()
-
-def save_docs_to_vector_db(docs: List[str], collection_name: str, filter_criteria: Optional[Dict] = None) -> QueryResult:
-    """
-    Save documents to the vector DB and perform a query with optional filtering.
-
-    Args:
-        docs (List[str]): List of document texts to insert.
-        collection_name (str): Name of the collection to insert documents into.
-        filter_criteria (Optional[Dict], optional): Filter criteria for querying. Defaults to None.
-
-    Returns:
-        QueryResult: Result of the query.
-    """
-    try:
-        # Insert documents
-        insert_success = VECTOR_DB_CLIENT.insert(items=docs, collection_name=collection_name)
-        if not insert_success:
-            raise ValueError("Failed to insert documents into the vector DB.")
-
-        # Compute embeddings
-        embeddings = VECTOR_DB_CLIENT.embedding_func.func(docs)
-
-        # Perform vector search with filters if needed
-        if filter_criteria:
-            query_result = VECTOR_DB_CLIENT.query(
-                query="",  # Empty query string since we're performing a vector search
-                collection_name=collection_name,
-                filter=filter_criteria
-            )
-        else:
-            # If no filter is needed, you might perform a standard query or vector search
-            # Depending on your application logic
-            query_result = VECTOR_DB_CLIENT.query(
-                query="",
-                collection_name=collection_name
-            )
-
-        return query_result
-    except Exception as e:
-        logger.error(f"Error in save_docs_to_vector_db: {e}")
-        raise e
-
-# Example usage within an API endpoint
-async def process_file(form: ProcessFileForm):
-    try:
-        docs = extract_docs(form.file_id)  # Implement this function as needed
-        filter_criteria = {"category": {"$eq": "science"}}  # Example filter
-        result = save_docs_to_vector_db(docs, "default_collection", filter_criteria)
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+                return QueryResult(
+                    ids=response.ids,
+                    embeddings=response.embeddings,
+                    metadatas=metadatas,
+                    documents=documents,
+                    distances=distances,  # Include distances
+                    error=None
+                )
+            else:
+                error_msg = "No documents found for the given vector search."
+                logger.error(f"[Request ID: {request_id}] {error_msg}")
+                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
+        except Exception as e:
+            logger.exception(f"[Request ID: {request_id}] Exception during vector_search_async: {e}")
+            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=str(e))
