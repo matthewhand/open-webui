@@ -1444,6 +1444,43 @@ IMAGES_OPENAI_API_KEY = PersistentConfig(
     os.getenv("IMAGES_OPENAI_API_KEY", OPENAI_API_KEY),
 )
 
+# Huggingface Provider Configuration
+IMAGES_HUGGINGFACE_BASE_URL = PersistentConfig(
+    "IMAGES_HUGGINGFACE_BASE_URL",
+    "image_generation.huggingface.base_url",
+    os.getenv("IMAGES_HUGGINGFACE_BASE_URL", "https://api-inference.huggingface.co/models"),
+)
+IMAGES_HUGGINGFACE_API_KEY = PersistentConfig(
+    "IMAGES_HUGGINGFACE_API_KEY",
+    "image_generation.huggingface.api_key",
+    os.getenv("IMAGES_HUGGINGFACE_API_KEY", ""),
+)
+IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS = os.getenv("IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS", "{\"x-wait-for-model\": \"true\"}")
+
+# Replicate Provider Configuration
+IMAGES_REPLICATE_BASE_URL = PersistentConfig(
+    "IMAGES_REPLICATE_BASE_URL",
+    "image_generation.replicate.base_url",
+    os.getenv("IMAGES_REPLICATE_BASE_URL", "https://api.replicate.com/v1/models"),
+)
+IMAGES_REPLICATE_API_KEY = PersistentConfig(
+    "IMAGES_REPLICATE_API_KEY",
+    "image_generation.replicate.api_key",
+    os.getenv("IMAGES_REPLICATE_API_KEY", ""),
+)
+
+# Together AI Provider Configuration
+IMAGES_TOGETHERAI_BASE_URL = PersistentConfig(
+    "IMAGES_TOGETHERAI_BASE_URL",
+    "image_generation.together_ai.base_url",
+    os.getenv("IMAGES_TOGETHERAI_BASE_URL", "https://api.together.xyz/v1/images"),
+)
+IMAGES_TOGETHER_AI_API_KEY = PersistentConfig(
+    "IMAGES_TOGETHERAI_API_KEY",
+    "image_generation.together_ai.api_key",
+    os.getenv("IMAGES_TOGETHERAI_API_KEY", ""),
+)
+
 IMAGE_SIZE = PersistentConfig(
     "IMAGE_SIZE", "image_generation.size", os.getenv("IMAGE_SIZE", "512x512")
 )
