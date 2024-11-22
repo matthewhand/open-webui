@@ -59,6 +59,12 @@ class GenerateImageForm(BaseModel):
 # Initialize configuration
 app.state.config = AppConfig()
 
+app.state.config.ENGINE = IMAGE_GENERATION_ENGINE
+app.state.config.ENABLED = ENABLE_IMAGE_GENERATION
+app.state.config.MODEL = IMAGE_GENERATION_MODEL
+app.state.config.IMAGE_SIZE = IMAGE_SIZE
+app.state.config.IMAGE_STEPS = IMAGE_STEPS
+
 # Dynamically instantiate providers from the registry
 PROVIDERS: Dict[str, BaseImageProvider] = {}
 
@@ -72,9 +78,9 @@ for provider_name in provider_registry.list_providers():
         # Instantiate provider with shared configuration
         provider_instance = provider_class(config=app.state.config)
         PROVIDERS[provider_name] = provider_instance
-        log.info(f"Provider '{provider_name}' initialized successfully.")
+        log.info(f"Provider '{provider_name}' loaded successfully.")
     except Exception as e:
-        log.error(f"Failed to initialize provider '{provider_name}': {e}")
+        log.error(f"Failed to load provider '{provider_name}': {e}")
 
 @app.get("/config")
 async def get_config(user=Depends(get_admin_user)):
@@ -145,6 +151,10 @@ async def verify_url(user=Depends(get_admin_user)):
     if not provider:
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' not supported.")
 
+    # Check if provider is configured
+    if not hasattr(provider, 'base_url') or (hasattr(provider, 'api_key') and not provider.api_key):
+        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
+
     try:
         await provider.verify_url()  # Call provider-specific verification
         return {"message": f"Engine '{engine}' verified successfully."}
@@ -161,6 +171,10 @@ async def get_available_models(user=Depends(get_verified_user)):
     if not provider:
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' not supported.")
 
+    # Check if provider is configured
+    if not hasattr(provider, 'base_url') or (hasattr(provider, 'api_key') and not provider.api_key):
+        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
+
     try:
         models = await provider.list_models()
         return {"models": models}
@@ -176,6 +190,10 @@ async def generate_images(form_data: GenerateImageForm, user=Depends(get_verifie
 
     if not provider:
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' not supported.")
+
+    # Check if provider is configured
+    if not hasattr(provider, 'base_url') or (hasattr(provider, 'api_key') and not provider.api_key):
+        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
 
     size = form_data.size or IMAGE_SIZE.value
     try:

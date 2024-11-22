@@ -16,22 +16,33 @@ class OpenAIProvider(BaseImageProvider):
     Provider for OpenAI's DALL·E image generation API.
     """
 
-    def __init__(self):
-        """
-        Initialize the OpenAI provider with its specific configuration.
-        """
-        super().__init__(
-            base_url=IMAGES_OPENAI_API_BASE_URL.value,
-            api_key=IMAGES_OPENAI_API_KEY.value,
-        )
-        log.debug(f"OpenAIProvider initialized with base_url: {self.base_url}")
-
     def populate_config(self):
         """
-        Populate the shared configuration with OpenAI-specific details.
+        Populate OpenAI-specific configuration.
+        Logs info when required config is available and skips silently if not configured.
         """
-        IMAGES_OPENAI_API_BASE_URL.value = self.base_url
-        IMAGES_OPENAI_API_KEY.value = self.api_key
+        config_items = [
+            {"key": "IMAGES_OPENAI_API_BASE_URL", "value": IMAGES_OPENAI_API_BASE_URL.value, "required": True},
+            {"key": "IMAGES_OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value, "required": True},
+        ]
+
+        for config in config_items:
+            key = config["key"]
+            value = config["value"]
+            required = config["required"]
+
+            if value:
+                if key == "IMAGES_OPENAI_API_BASE_URL":
+                    self.base_url = value
+                elif key == "IMAGES_OPENAI_API_KEY":
+                    self.api_key = value
+            elif required:
+                log.debug("OpenAIProvider: Required configuration is not set.")
+
+        if hasattr(self, 'base_url') and hasattr(self, 'api_key'):
+            log.info(f"OpenAIProvider available with base_url: {self.base_url}")
+        else:
+            log.debug("OpenAIProvider: Required configuration is missing and provider is not available.")
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -48,6 +59,10 @@ class OpenAIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("OpenAIProvider is not configured properly.")
+            raise Exception("OpenAIProvider is not configured.")
+
         payload = {
             "model": "dall-e-2",  # Default model
             "prompt": prompt,
@@ -55,6 +70,9 @@ class OpenAIProvider(BaseImageProvider):
             "size": size,
             "response_format": "b64_json",
         }
+
+        if negative_prompt:
+            payload["negative_prompt"] = negative_prompt  # Ensure API supports this
 
         log.debug(f"OpenAIProvider Payload: {payload}")
 
@@ -104,10 +122,14 @@ class OpenAIProvider(BaseImageProvider):
         """
         Verify the connectivity of OpenAI's API endpoint.
         """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("OpenAIProvider is not configured properly.")
+            raise Exception("OpenAIProvider is not configured.")
+
         try:
             async with httpx.AsyncClient() as client:
                 # OpenAI doesn't have a specific status endpoint for image generation.
-                # We'll perform a simple request to list available models as a connectivity check.
+                # We'll perform a simple request to list models as a connectivity check.
                 response = await client.get(
                     url=f"{self.base_url}/models",
                     headers=self.headers,
@@ -128,8 +150,8 @@ class OpenAIProvider(BaseImageProvider):
             Dict[str, Optional[str]]: OpenAI configuration details.
         """
         return {
-            "IMAGES_OPENAI_API_BASE_URL": self.base_url,
-            "IMAGES_OPENAI_API_KEY": self.api_key,
+            "OPENAI_API_BASE_URL": getattr(self, 'base_url', None),
+            "OPENAI_API_KEY": getattr(self, 'api_key', None),
         }
 
 

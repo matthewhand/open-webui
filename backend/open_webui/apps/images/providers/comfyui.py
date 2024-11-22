@@ -9,12 +9,7 @@ from typing import List, Dict, Optional
 
 import websockets
 import httpx
-
-from open_webui.config import (
-    COMFYUI_BASE_URL,
-    COMFYUI_WORKFLOW,
-    COMFYUI_WORKFLOW_NODES,
-)
+from open_webui.config import COMFYUI_BASE_URL, COMFYUI_WORKFLOW, COMFYUI_WORKFLOW_NODES
 from .base import BaseImageProvider
 from .registry import provider_registry
 
@@ -26,26 +21,44 @@ class ComfyUIProvider(BaseImageProvider):
     Provider for ComfyUI-based image generation.
     """
 
-    def __init__(self):
-        """
-        Initialize the ComfyUI provider with its specific configuration.
-        """
-        super().__init__(
-            base_url=COMFYUI_BASE_URL.value,
-            api_key=None,
-        )
-        self.workflow = json.loads(COMFYUI_WORKFLOW.value)
-        self.workflow_nodes = COMFYUI_WORKFLOW_NODES.value
-
-        log.debug(f"ComfyUIProvider initialized with base_url: {self.base_url}")
-
     def populate_config(self):
         """
         Populate the shared configuration with ComfyUI-specific details.
+        Logs info when required config is available and skips silently if not configured.
         """
-        COMFYUI_BASE_URL.value = self.base_url
-        COMFYUI_WORKFLOW.value = json.dumps(self.workflow)
-        COMFYUI_WORKFLOW_NODES.value = json.dumps(self.workflow_nodes)
+        config_items = [
+            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value, "required": True},
+            {"key": "COMFYUI_WORKFLOW", "value": COMFYUI_WORKFLOW.value, "required": False},
+            {"key": "COMFYUI_WORKFLOW_NODES", "value": COMFYUI_WORKFLOW_NODES.value, "required": False},
+        ]
+
+        for config in config_items:
+            key = config["key"]
+            value = config["value"]
+            required = config["required"]
+
+            if value:
+                if key == "COMFYUI_BASE_URL":
+                    self.base_url = value
+                elif key == "COMFYUI_WORKFLOW":
+                    try:
+                        self.workflow = json.loads(value)
+                    except json.JSONDecodeError as e:
+                        log.warning(f"Failed to parse {key}: {e}. Defaulting to empty dict.")
+                        self.workflow = {}
+                elif key == "COMFYUI_WORKFLOW_NODES":
+                    try:
+                        self.workflow_nodes = json.loads(value)
+                    except json.JSONDecodeError as e:
+                        log.warning(f"Failed to parse {key}: {e}. Defaulting to empty list.")
+                        self.workflow_nodes = []
+            elif required:
+                log.debug("ComfyUIProvider: Required configuration is not set.")
+
+        if hasattr(self, 'base_url'):
+            log.info(f"ComfyUIProvider available with base_url: {self.base_url}")
+        else:
+            log.debug("ComfyUIProvider: Required configuration is missing and provider is not available.")
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -62,6 +75,10 @@ class ComfyUIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
+        if not hasattr(self, 'base_url'):
+            log.error("ComfyUIProvider is not configured properly.")
+            raise Exception("ComfyUIProvider is not configured.")
+
         width, height = map(int, size.lower().split("x"))
         updated_workflow = self._update_workflow(
             prompt=prompt, n=n, width=width, height=height, negative_prompt=negative_prompt
@@ -84,6 +101,10 @@ class ComfyUIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of available models.
         """
+        if not hasattr(self, 'base_url'):
+            log.error("ComfyUIProvider is not configured properly.")
+            return []
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -105,12 +126,18 @@ class ComfyUIProvider(BaseImageProvider):
                 return []
 
             model_list_key = next(
-                (key for key in info.get(node_class_type, {}).get("input", {}).get("required", {}) if "_name" in key),
+                (
+                    key
+                    for key in info.get(node_class_type, {}).get("input", {}).get("required", {})
+                    if "_name" in key
+                ),
                 None,
             )
 
             if not model_list_key:
-                log.warning(f"No model list key found in ComfyUI object_info for class_type '{node_class_type}'.")
+                log.warning(
+                    f"No model list key found in ComfyUI object_info for class_type '{node_class_type}'."
+                )
                 return []
 
             models = info.get(node_class_type, {}).get("input", {}).get("required", {}).get(model_list_key, [])
@@ -123,6 +150,10 @@ class ComfyUIProvider(BaseImageProvider):
         """
         Verify the connectivity of ComfyUI's API endpoint.
         """
+        if not hasattr(self, 'base_url'):
+            log.error("ComfyUIProvider is not configured properly.")
+            raise Exception("ComfyUIProvider is not configured.")
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -137,7 +168,9 @@ class ComfyUIProvider(BaseImageProvider):
             log.error(f"Failed to verify ComfyUI API: {e}")
             raise Exception(f"Failed to verify ComfyUI API: {e}")
 
-    def _update_workflow(self, prompt: str, n: int, width: int, height: int, negative_prompt: Optional[str]):
+    def _update_workflow(
+        self, prompt: str, n: int, width: int, height: int, negative_prompt: Optional[str]
+    ) -> Dict:
         """
         Update the ComfyUI workflow with user-provided parameters.
 
@@ -159,9 +192,7 @@ class ComfyUIProvider(BaseImageProvider):
                 continue
 
             inputs = workflow.get(node_id, {}).get("inputs", {})
-            if node_type == "model":
-                inputs["model"] = self.additional_headers.get("model", "")
-            elif node_type == "prompt":
+            if node_type == "prompt":
                 inputs["text"] = prompt
             elif node_type == "negative_prompt":
                 inputs["text"] = negative_prompt or ""
@@ -169,17 +200,13 @@ class ComfyUIProvider(BaseImageProvider):
                 inputs["width"] = width
             elif node_type == "height":
                 inputs["height"] = height
-            elif node_type == "steps":
-                inputs["steps"] = int(self.additional_headers.get("steps", 50))
-            elif node_type == "seed":
-                inputs["seed"] = self.additional_headers.get("seed", random.randint(0, 2**32))
             elif node_type == "n":
                 inputs["batch_size"] = n
 
             workflow[node_id]["inputs"] = inputs
         return workflow
 
-    def _get_model_node_id(self):
+    def _get_model_node_id(self) -> Optional[str]:
         """
         Get the model node ID from the workflow nodes.
 
@@ -236,10 +263,16 @@ class ComfyUIProvider(BaseImageProvider):
         """
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(f"{self.base_url}/history/{client_id}", headers=self.headers)
+                response = await client.get(
+                    f"{self.base_url}/history/{client_id}", headers=self.headers
+                )
             response.raise_for_status()
             history = response.json()
-            return {"data": [self.get_image_url(**img) for img in history.get("outputs", {}).values()]}
+            return {
+                "data": [
+                    self.get_image_url(**img) for img in history.get("outputs", {}).values()
+                ]
+            }
         except Exception as e:
             log.error(f"Error retrieving generated images from ComfyUI: {e}")
             return {}
@@ -258,6 +291,19 @@ class ComfyUIProvider(BaseImageProvider):
         """
         data = {"filename": filename, "subfolder": subfolder, "type": folder_type}
         return f"{self.base_url}/view?{urllib.parse.urlencode(data)}"
+
+    def get_config(self) -> Dict[str, Optional[str]]:
+        """
+        Retrieve ComfyUI-specific configuration details.
+
+        Returns:
+            Dict[str, Optional[str]]: ComfyUI configuration details.
+        """
+        return {
+            "COMFYUI_BASE_URL": getattr(self, 'base_url', None),
+            "COMFYUI_WORKFLOW": getattr(self, 'workflow', {}),
+            "COMFYUI_WORKFLOW_NODES": getattr(self, 'workflow_nodes', []),
+        }
 
 
 # Register the provider

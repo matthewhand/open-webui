@@ -1,3 +1,5 @@
+# backend/open_webui/apps/images/providers/__init__.py
+
 from .huggingface import HuggingfaceProvider
 from .replicate import ReplicateProvider
 from .togetherai import TogetherAIProvider

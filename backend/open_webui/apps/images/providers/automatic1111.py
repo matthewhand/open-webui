@@ -4,7 +4,6 @@ import logging
 from typing import List, Dict, Optional
 
 import httpx
-
 from .base import BaseImageProvider
 from .registry import provider_registry
 from open_webui.config import (
@@ -23,35 +22,42 @@ class Automatic1111Provider(BaseImageProvider):
     Provider for AUTOMATIC1111-based image generation.
     """
 
-    def __init__(self, config: AppConfig):
-        """
-        Initialize the Automatic1111 provider with its specific configuration.
-
-        Args:
-            config (AppConfig): The global application configuration object.
-        """
-        super().__init__(config=config)
-        self.base_url = self.config.AUTOMATIC1111_BASE_URL
-        self.api_key = self.config.AUTOMATIC1111_API_AUTH
-        self.cfg_scale = self.config.AUTOMATIC1111_CFG_SCALE or 7.5
-        self.sampler = self.config.AUTOMATIC1111_SAMPLER or "Euler"
-        self.scheduler = self.config.AUTOMATIC1111_SCHEDULER or "normal"
-
-        # Initialize headers, including authorization if API key is provided
-        self.headers = {
-            "Content-Type": "application/json",
-        }
-        if self.api_key:
-            self.headers["Authorization"] = f"Bearer {self.api_key}"
-
-        log.debug(f"Automatic1111Provider initialized with base_url: {self.base_url}")
-
     def populate_config(self):
         """
         Populate the shared configuration with AUTOMATIC1111-specific details.
+        Logs info when required config is available and skips silently if not configured.
         """
-        # Configuration is managed via PersistentConfig; no need to set it here.
-        pass
+        config_items = [
+            {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value, "required": True},
+            {"key": "AUTOMATIC1111_API_AUTH", "value": AUTOMATIC1111_API_AUTH.value, "required": False},
+            {"key": "AUTOMATIC1111_CFG_SCALE", "value": AUTOMATIC1111_CFG_SCALE.value or 7.5, "required": False},
+            {"key": "AUTOMATIC1111_SAMPLER", "value": AUTOMATIC1111_SAMPLER.value or "Euler", "required": False},
+            {"key": "AUTOMATIC1111_SCHEDULER", "value": AUTOMATIC1111_SCHEDULER.value or "normal", "required": False},
+        ]
+
+        for config in config_items:
+            key = config["key"]
+            value = config["value"]
+            required = config["required"]
+
+            if value:
+                if key == "AUTOMATIC1111_BASE_URL":
+                    self.base_url = value
+                elif key == "AUTOMATIC1111_API_AUTH":
+                    self.api_key = value
+                elif key == "AUTOMATIC1111_CFG_SCALE":
+                    self.cfg_scale = float(value)
+                elif key == "AUTOMATIC1111_SAMPLER":
+                    self.sampler = value
+                elif key == "AUTOMATIC1111_SCHEDULER":
+                    self.scheduler = value
+            elif required:
+                log.debug("Automatic1111Provider: Required configuration is not set.")
+
+        if hasattr(self, 'base_url'):
+            log.info(f"Automatic1111Provider available with base_url: {self.base_url}")
+        else:
+            log.debug("Automatic1111Provider: Required configuration is missing and provider is not available.")
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -68,13 +74,17 @@ class Automatic1111Provider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
+        if not hasattr(self, 'base_url'):
+            log.error("Automatic1111Provider is not configured properly.")
+            raise Exception("Automatic1111Provider is not configured.")
+
         width, height = map(int, size.lower().split("x"))
         payload = {
             "prompt": prompt,
             "batch_size": n,
             "width": width,
             "height": height,
-            "cfg_scale": float(self.cfg_scale),
+            "cfg_scale": self.cfg_scale,
             "sampler_name": self.sampler,
             "scheduler": self.scheduler,
         }
@@ -118,6 +128,10 @@ class Automatic1111Provider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of available models.
         """
+        if not hasattr(self, 'base_url'):
+            log.error("Automatic1111Provider is not configured properly.")
+            return []
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -128,7 +142,10 @@ class Automatic1111Provider(BaseImageProvider):
             response.raise_for_status()
             models = response.json()
             log.debug(f"Automatic1111Provider Models Response: {models}")
-            return [{"id": model.get("title", "unknown"), "name": model.get("model_name", "unknown")} for model in models]
+            return [
+                {"id": model.get("title", "unknown"), "name": model.get("model_name", "unknown")}
+                for model in models
+            ]
         except Exception as e:
             log.error(f"Error listing AUTOMATIC1111 models: {e}")
             return []
@@ -137,9 +154,17 @@ class Automatic1111Provider(BaseImageProvider):
         """
         Verify the connectivity of AUTOMATIC1111's API endpoint.
         """
+        if not hasattr(self, 'base_url'):
+            log.error("Automatic1111Provider is not configured properly.")
+            raise Exception("Automatic1111Provider is not configured.")
+
         try:
             async with httpx.AsyncClient() as client:
-                response = await client.get(f"{self.base_url}/sdapi/v1/status", headers=self.headers, timeout=10.0)
+                response = await client.get(
+                    f"{self.base_url}/sdapi/v1/status",
+                    headers=self.headers,
+                    timeout=10.0,
+                )
             response.raise_for_status()
             status = response.json()
             log.info(f"AUTOMATIC1111 API Status: {status}")
@@ -155,11 +180,11 @@ class Automatic1111Provider(BaseImageProvider):
             Dict[str, Optional[str]]: Configuration details specific to AUTOMATIC1111.
         """
         return {
-            "AUTOMATIC1111_BASE_URL": self.base_url,
-            "AUTOMATIC1111_API_AUTH": self.api_key,
-            "AUTOMATIC1111_CFG_SCALE": self.cfg_scale,
-            "AUTOMATIC1111_SAMPLER": self.sampler,
-            "AUTOMATIC1111_SCHEDULER": self.scheduler,
+            "AUTOMATIC1111_BASE_URL": getattr(self, 'base_url', None),
+            "AUTOMATIC1111_API_AUTH": getattr(self, 'api_key', None),
+            "AUTOMATIC1111_CFG_SCALE": getattr(self, 'cfg_scale', 7.5),
+            "AUTOMATIC1111_SAMPLER": getattr(self, 'sampler', "Euler"),
+            "AUTOMATIC1111_SCHEDULER": getattr(self, 'scheduler', "normal"),
         }
 
 

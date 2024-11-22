@@ -17,22 +17,33 @@ class TogetherAIProvider(BaseImageProvider):
     Provider for TogetherAI-based image generation.
     """
 
-    def __init__(self):
-        """
-        Initialize TogetherAI provider with its specific configuration.
-        """
-        super().__init__(
-            base_url=IMAGES_TOGETHERAI_BASE_URL.value,
-            api_key=IMAGES_TOGETHERAI_API_KEY.value,
-        )
-        log.debug(f"TogetherAIProvider initialized with base_url: {self.base_url}")
-
     def populate_config(self):
         """
-        Populate the shared configuration with TogetherAI-specific details.
+        Populate TogetherAI-specific configuration.
+        Logs info when required config is available and skips silently if not configured.
         """
-        IMAGES_TOGETHERAI_BASE_URL.value = self.base_url
-        IMAGES_TOGETHERAI_API_KEY.value = self.api_key
+        config_items = [
+            {"key": "IMAGES_TOGETHERAI_BASE_URL", "value": IMAGES_TOGETHERAI_BASE_URL.value, "required": True},
+            {"key": "IMAGES_TOGETHERAI_API_KEY", "value": IMAGES_TOGETHERAI_API_KEY.value, "required": True},
+        ]
+
+        for config in config_items:
+            key = config["key"]
+            value = config["value"]
+            required = config["required"]
+
+            if value:
+                if key == "IMAGES_TOGETHERAI_BASE_URL":
+                    self.base_url = value
+                elif key == "IMAGES_TOGETHERAI_API_KEY":
+                    self.api_key = value
+            elif required:
+                log.debug("TogetherAIProvider: Required configuration is not set.")
+
+        if hasattr(self, 'base_url') and hasattr(self, 'api_key'):
+            log.info(f"TogetherAIProvider available with base_url: {self.base_url}")
+        else:
+            log.debug("TogetherAIProvider: Required configuration is missing and provider is not available.")
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -41,20 +52,24 @@ class TogetherAIProvider(BaseImageProvider):
         Generate images using TogetherAI's API.
 
         Args:
-            prompt (str): The text prompt for image generation.
+            prompt (str): Text prompt for image generation.
             n (int): Number of images to generate.
             size (str): Dimensions of the image (e.g., "512x512").
-            negative_prompt (Optional[str]): Text to exclude from the generated images.
+            negative_prompt (Optional[str]): Text to avoid in the generated images.
 
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("TogetherAIProvider is not configured properly.")
+            raise Exception("TogetherAIProvider is not configured.")
+
         width, height = map(int, size.lower().split("x"))
         payload = {
             "prompt": prompt,
             "width": width,
             "height": height,
-            "steps": int(self.additional_headers.get("steps", 50)),
+            "steps": 50,  # Default steps
             "n": n,
             "negative_prompt": negative_prompt or "",
             "response_format": "b64_json",
@@ -98,6 +113,10 @@ class TogetherAIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of available models.
         """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("TogetherAIProvider is not configured properly.")
+            return []
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -113,6 +132,23 @@ class TogetherAIProvider(BaseImageProvider):
             log.error(f"Error listing TogetherAI models: {e}")
             return []
 
+    async def verify_url(self):
+        """
+        Verify connectivity to the TogetherAI API endpoint.
+        """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("TogetherAIProvider is not configured properly.")
+            raise Exception("TogetherAIProvider is not configured.")
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url=f"{self.base_url}/health", headers=self.headers, timeout=10.0)
+            response.raise_for_status()
+            log.info("TogetherAI API is reachable.")
+        except Exception as e:
+            log.error(f"Failed to verify TogetherAI API: {e}")
+            raise Exception(f"Failed to verify TogetherAI API: {e}")
+
     def get_config(self) -> Dict[str, Optional[str]]:
         """
         Retrieve TogetherAI-specific configuration details.
@@ -121,8 +157,8 @@ class TogetherAIProvider(BaseImageProvider):
             Dict[str, Optional[str]]: TogetherAI configuration details.
         """
         return {
-            "IMAGES_TOGETHERAI_BASE_URL": self.base_url,
-            "IMAGES_TOGETHERAI_API_KEY": self.api_key,
+            "TOGETHERAI_BASE_URL": getattr(self, 'base_url', None),
+            "TOGETHERAI_API_KEY": getattr(self, 'api_key', None),
         }
 
 

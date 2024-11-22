@@ -5,11 +5,7 @@ import logging
 from typing import List, Dict, Optional
 
 import httpx
-from open_webui.config import (
-    IMAGES_HUGGINGFACE_BASE_URL,
-    IMAGES_HUGGINGFACE_API_KEY,
-    IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS,
-)
+from open_webui.config import IMAGES_HUGGINGFACE_BASE_URL, IMAGES_HUGGINGFACE_API_KEY
 from .base import BaseImageProvider
 from .registry import provider_registry
 
@@ -21,29 +17,33 @@ class HuggingfaceProvider(BaseImageProvider):
     Provider for Huggingface-based image generation.
     """
 
-    def __init__(self):
-        """
-        Initialize the Huggingface provider with its specific configuration.
-        """
-        super().__init__(
-            base_url=IMAGES_HUGGINGFACE_BASE_URL.value,
-            api_key=IMAGES_HUGGINGFACE_API_KEY.value,
-        )
-        try:
-            self.additional_headers = json.loads(IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS)
-        except json.JSONDecodeError:
-            log.error("Failed to parse Huggingface additional headers. Defaulting to empty headers.")
-            self.additional_headers = {}
-
-        log.debug(f"HuggingfaceProvider initialized with base_url: {self.base_url}")
-
     def populate_config(self):
         """
-        Populate the shared configuration with Huggingface-specific details.
+        Populate Huggingface-specific configuration.
+        Logs info when required config is available and skips silently if not configured.
         """
-        IMAGES_HUGGINGFACE_BASE_URL.value = self.base_url
-        IMAGES_HUGGINGFACE_API_KEY.value = self.api_key
-        IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS.value = json.dumps(self.additional_headers)
+        config_items = [
+            {"key": "IMAGES_HUGGINGFACE_BASE_URL", "value": IMAGES_HUGGINGFACE_BASE_URL.value, "required": True},
+            {"key": "IMAGES_HUGGINGFACE_API_KEY", "value": IMAGES_HUGGINGFACE_API_KEY.value, "required": True},
+        ]
+
+        for config in config_items:
+            key = config["key"]
+            value = config["value"]
+            required = config["required"]
+
+            if value:
+                if key == "IMAGES_HUGGINGFACE_BASE_URL":
+                    self.base_url = value
+                elif key == "IMAGES_HUGGINGFACE_API_KEY":
+                    self.api_key = value
+            elif required:
+                log.debug("HuggingfaceProvider: Required configuration is not set.")
+
+        if hasattr(self, 'base_url') and hasattr(self, 'api_key'):
+            log.info(f"HuggingfaceProvider available with base_url: {self.base_url}")
+        else:
+            log.debug("HuggingfaceProvider: Required configuration is missing and provider is not available.")
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -60,11 +60,15 @@ class HuggingfaceProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of generated image URLs.
         """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("HuggingfaceProvider is not configured properly.")
+            raise Exception("HuggingfaceProvider is not configured.")
+
         width, height = map(int, size.lower().split("x"))
         payload = {
             "inputs": prompt,
             "parameters": {
-                "num_inference_steps": self.additional_headers.get("num_inference_steps", 50),
+                "num_inference_steps": 50,  # Default inference steps
                 "negative_prompt": negative_prompt or "",
                 "width": width,
                 "height": height,
@@ -110,6 +114,10 @@ class HuggingfaceProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of available models with 'id' and 'name'.
         """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("HuggingfaceProvider is not configured properly.")
+            return []
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
@@ -119,12 +127,32 @@ class HuggingfaceProvider(BaseImageProvider):
                 )
             response.raise_for_status()
             models = response.json()
-
             log.debug(f"HuggingfaceProvider Models Response: {json.dumps(models, indent=2)}")
             return [{"id": model.get("id", "unknown"), "name": model.get("name", "unknown")} for model in models]
         except Exception as e:
             log.error(f"Error listing Huggingface models: {e}")
             return []
+
+    async def verify_url(self):
+        """
+        Verify the connectivity of Huggingface's API endpoint.
+        """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("HuggingfaceProvider is not configured properly.")
+            raise Exception("HuggingfaceProvider is not configured.")
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    url=self.base_url,
+                    headers=self.headers,
+                    timeout=10.0,
+                )
+            response.raise_for_status()
+            log.info("Huggingface API is reachable.")
+        except Exception as e:
+            log.error(f"Failed to verify Huggingface API: {e}")
+            raise Exception(f"Failed to verify Huggingface API: {e}")
 
     def get_config(self) -> Dict[str, Optional[str]]:
         """
@@ -134,9 +162,8 @@ class HuggingfaceProvider(BaseImageProvider):
             Dict[str, Optional[str]]: Huggingface configuration details.
         """
         return {
-            "IMAGES_HUGGINGFACE_BASE_URL": self.base_url,
-            "IMAGES_HUGGINGFACE_API_KEY": self.api_key,
-            "IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS": json.dumps(self.additional_headers),
+            "HUGGINGFACE_BASE_URL": getattr(self, 'base_url', None),
+            "HUGGINGFACE_API_KEY": getattr(self, 'api_key', None),
         }
 
 

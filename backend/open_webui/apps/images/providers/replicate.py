@@ -17,22 +17,33 @@ class ReplicateProvider(BaseImageProvider):
     Provider for Replicate API-based image generation.
     """
 
-    def __init__(self):
-        """
-        Initialize the Replicate provider with its specific configuration.
-        """
-        super().__init__(
-            base_url=IMAGES_REPLICATE_BASE_URL.value,
-            api_key=IMAGES_REPLICATE_API_KEY.value,
-        )
-        log.debug(f"ReplicateProvider initialized with base_url: {self.base_url}")
-
     def populate_config(self):
         """
-        Populate the shared configuration with Replicate-specific details.
+        Populate Replicate-specific configuration.
+        Logs info when required config is available and skips silently if not configured.
         """
-        IMAGES_REPLICATE_BASE_URL.value = self.base_url
-        IMAGES_REPLICATE_API_KEY.value = self.api_key
+        config_items = [
+            {"key": "IMAGES_REPLICATE_BASE_URL", "value": IMAGES_REPLICATE_BASE_URL.value, "required": True},
+            {"key": "IMAGES_REPLICATE_API_KEY", "value": IMAGES_REPLICATE_API_KEY.value, "required": True},
+        ]
+
+        for config in config_items:
+            key = config["key"]
+            value = config["value"]
+            required = config["required"]
+
+            if value:
+                if key == "IMAGES_REPLICATE_BASE_URL":
+                    self.base_url = value
+                elif key == "IMAGES_REPLICATE_API_KEY":
+                    self.api_key = value
+            elif required:
+                log.debug("ReplicateProvider: Required configuration is not set.")
+
+        if hasattr(self, 'base_url') and hasattr(self, 'api_key'):
+            log.info(f"ReplicateProvider available with base_url: {self.base_url}")
+        else:
+            log.debug("ReplicateProvider: Required configuration is missing and provider is not available.")
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -49,6 +60,10 @@ class ReplicateProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("ReplicateProvider is not configured properly.")
+            raise Exception("ReplicateProvider is not configured.")
+
         width, height = map(int, size.lower().split("x"))
         payload = {
             "prompt": prompt,
@@ -95,10 +110,14 @@ class ReplicateProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of available models.
         """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("ReplicateProvider is not configured properly.")
+            return []
+
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    url=f"{self.base_url}/models",  # Adjust endpoint as needed
+                    url=f"{self.base_url}/models",
                     headers=self.headers,
                     timeout=30.0,
                 )
@@ -112,19 +131,21 @@ class ReplicateProvider(BaseImageProvider):
 
     async def verify_url(self):
         """
-        Verify the connectivity of Replicate's API endpoint.
+        Verify connectivity to the Replicate API endpoint.
         """
+        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+            log.error("ReplicateProvider is not configured properly.")
+            raise Exception("ReplicateProvider is not configured.")
+
         try:
             async with httpx.AsyncClient() as client:
-                # Replicate provides a health check endpoint
                 response = await client.get(
                     url=f"{self.base_url}/v1/health",
                     headers=self.headers,
                     timeout=10.0,
                 )
             response.raise_for_status()
-            status = response.json()
-            log.info(f"Replicate API Status: {status}")
+            log.info("Replicate API is reachable.")
         except Exception as e:
             log.error(f"Failed to verify Replicate API: {e}")
             raise Exception(f"Failed to verify Replicate API: {e}")
@@ -137,8 +158,8 @@ class ReplicateProvider(BaseImageProvider):
             Dict[str, Optional[str]]: Replicate configuration details.
         """
         return {
-            "IMAGES_REPLICATE_BASE_URL": self.base_url,
-            "IMAGES_REPLICATE_API_KEY": self.api_key,
+            "REPLICATE_BASE_URL": getattr(self, 'base_url', None),
+            "REPLICATE_API_KEY": getattr(self, 'api_key', None),
         }
 
 

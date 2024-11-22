@@ -35,13 +35,9 @@ class BaseImageProvider(ABC):
             config (AppConfig): Shared configuration object.
         """
         self.config = config
-        self.base_url = ""
-        self.api_key = ""
-        self.additional_headers = {}
-        self.headers = self._construct_headers()
-
         # Ensure subclass implements populate_config
         self.populate_config()
+        self.headers = self._construct_headers()
 
     def _construct_headers(self) -> Dict[str, str]:
         """
@@ -50,11 +46,12 @@ class BaseImageProvider(ABC):
         Returns:
             Dict[str, str]: A dictionary of HTTP headers.
         """
-        headers = {
-            "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
-            "Content-Type": "application/json",
-        }
-        headers.update(self.additional_headers)
+        headers = {}
+        if hasattr(self, 'api_key') and self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers["Content-Type"] = "application/json"
+        if hasattr(self, 'additional_headers'):
+            headers.update(self.additional_headers)
         return headers
 
     @abstractmethod
@@ -150,9 +147,9 @@ class BaseImageProvider(ABC):
             Dict[str, Optional[str]]: Provider-specific configuration details.
         """
         return {
-            "base_url": self.base_url,
-            "api_key": self.api_key,
-            "additional_headers": self.additional_headers,
+            "base_url": getattr(self, 'base_url', None),
+            "api_key": getattr(self, 'api_key', None),
+            "additional_headers": getattr(self, 'additional_headers', {}),
         }
 
     @abstractmethod

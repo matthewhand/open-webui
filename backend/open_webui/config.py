@@ -1448,7 +1448,7 @@ IMAGES_OPENAI_API_KEY = PersistentConfig(
 IMAGES_HUGGINGFACE_BASE_URL = PersistentConfig(
     "IMAGES_HUGGINGFACE_BASE_URL",
     "image_generation.huggingface.base_url",
-    os.getenv("IMAGES_HUGGINGFACE_BASE_URL", "https://api-inference.huggingface.co/models"),
+    os.getenv("IMAGES_HUGGINGFACE_BASE_URL", "https://api-inference.huggingface.co"),
 )
 IMAGES_HUGGINGFACE_API_KEY = PersistentConfig(
     "IMAGES_HUGGINGFACE_API_KEY",
@@ -1461,8 +1461,9 @@ IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS = os.getenv("IMAGES_HUGGINGFACE_ADDITIONAL
 IMAGES_REPLICATE_BASE_URL = PersistentConfig(
     "IMAGES_REPLICATE_BASE_URL",
     "image_generation.replicate.base_url",
-    os.getenv("IMAGES_REPLICATE_BASE_URL", "https://api.replicate.com/v1/models"),
+    os.getenv("IMAGES_REPLICATE_BASE_URL", "https://api.replicate.com/v1"),
 )
+
 IMAGES_REPLICATE_API_KEY = PersistentConfig(
     "IMAGES_REPLICATE_API_KEY",
     "image_generation.replicate.api_key",
@@ -1473,7 +1474,7 @@ IMAGES_REPLICATE_API_KEY = PersistentConfig(
 IMAGES_TOGETHERAI_BASE_URL = PersistentConfig(
     "IMAGES_TOGETHERAI_BASE_URL",
     "image_generation.together_ai.base_url",
-    os.getenv("IMAGES_TOGETHERAI_BASE_URL", "https://api.together.xyz/v1/images"),
+    os.getenv("IMAGES_TOGETHERAI_BASE_URL", "https://api.together.xyz/v1"),
 )
 IMAGES_TOGETHERAI_API_KEY = PersistentConfig(
     "IMAGES_TOGETHERAI_API_KEY",
