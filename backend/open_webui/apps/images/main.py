@@ -8,7 +8,15 @@ from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from open_webui.config import app_config  # Import core config
+from open_webui.config import (
+    AppConfig,
+    IMAGE_GENERATION_ENGINE,
+    ENABLE_IMAGE_GENERATION,
+    IMAGE_GENERATION_MODEL,
+    IMAGE_SIZE,
+    IMAGE_STEPS,
+    CORS_ALLOW_ORIGIN,
+)
 from open_webui.constants import ERROR_MESSAGES
 from open_webui.env import ENV, SRC_LOG_LEVELS
 from open_webui.utils.utils import get_admin_user, get_verified_user
@@ -17,11 +25,7 @@ from .providers.base import BaseImageProvider
 
 # Initialize logger
 log = logging.getLogger(__name__)
-log.setLevel(SRC_LOG_LEVELS.get("IMAGES", logging.INFO))
-
-# Cache directory
-IMAGE_CACHE_DIR = Path("./cache/image/generations/")
-IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+log.setLevel(SRC_LOG_LEVELS["IMAGES"])
 
 # FastAPI setup
 app = FastAPI(
@@ -32,7 +36,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust as needed
+    allow_origins=CORS_ALLOW_ORIGIN,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -55,7 +59,13 @@ class GenerateImageForm(BaseModel):
 
 
 # Initialize configuration
-app.state.config = app_config  # Use the already initialized AppConfig
+app.state.config = AppConfig()
+
+app.state.config.ENGINE = IMAGE_GENERATION_ENGINE
+app.state.config.ENABLED = ENABLE_IMAGE_GENERATION
+app.state.config.MODEL = IMAGE_GENERATION_MODEL
+app.state.config.IMAGE_SIZE = IMAGE_SIZE
+app.state.config.IMAGE_STEPS = IMAGE_STEPS
 
 # Dynamically instantiate providers from the registry
 PROVIDERS: Dict[str, BaseImageProvider] = {}
@@ -74,18 +84,34 @@ for provider_name in provider_registry.list_providers():
     except Exception as e:
         log.error(f"Failed to initialize provider '{provider_name}': {e}")
 
-# Routes
 @app.get("/config")
 async def get_config(user=Depends(get_admin_user)):
-    """Retrieve current configuration."""
-    return {
-        "enabled": app.state.config.ENABLED,
-        "engine": app.state.config.ENGINE,
-        "model": app.state.config.MODEL,
-        "image_size": app.state.config.IMAGE_SIZE,
-        "image_steps": app.state.config.IMAGE_STEPS,
+    """
+    Retrieve current configuration, dynamically flattening provider-specific details.
+    """
+    # General configuration
+    general_config = {
+        "enabled": app.state.config.ENABLED.value if hasattr(app.state.config.ENABLED, 'value') else app.state.config.ENABLED,
+        "engine": app.state.config.ENGINE.value if hasattr(app.state.config.ENGINE, 'value') else app.state.config.ENGINE,
+        #"model": app.state.config.MODEL.value if hasattr(app.state.config.MODEL, 'value') else app.state.config.MODEL,
+        #"image_size": app.state.config.IMAGE_SIZE.value if hasattr(app.state.config.IMAGE_SIZE, 'value') else app.state.config.IMAGE_SIZE,
+        #"image_steps": app.state.config.IMAGE_STEPS.value if hasattr(app.state.config.IMAGE_STEPS, 'value') else app.state.config.IMAGE_STEPS,
     }
 
+    # Flatten provider-specific configurations
+    flattened_providers = {
+        provider_name: {
+            key: value.value if hasattr(value, "value") else value
+            for key, value in provider_instance.get_config().items()
+        }
+        for provider_name, provider_instance in PROVIDERS.items()
+    }
+
+    # Combine general and provider configurations into a single top-level structure
+    return {
+        **general_config,  # Unpack general configuration
+        **flattened_providers,  # Unpack flattened provider configurations
+    }
 
 @app.post("/config/update")
 async def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):

@@ -3,19 +3,18 @@
 import base64
 import logging
 import mimetypes
-import os
 import uuid
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import List, Dict, Optional
 
-import aiofiles
 import httpx
+from open_webui.config import CACHE_DIR
 
 log = logging.getLogger(__name__)
 
-# Set up a default image cache directory
-IMAGE_CACHE_DIR = Path(os.getenv("CACHE_DIR", "./cache")).joinpath("image/generations")
+# Calculate and create the cache directory
+IMAGE_CACHE_DIR = Path(CACHE_DIR).joinpath("./image/generations/")
 IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -45,7 +44,7 @@ class BaseImageProvider(ABC):
         headers.update(self.additional_headers)
         return headers
 
-    async def save_b64_image(self, b64_str: str) -> Optional[str]:
+    def save_b64_image(self, b64_str: str) -> Optional[str]:
         """
         Save a base64-encoded image to the cache directory.
 
@@ -63,8 +62,8 @@ class BaseImageProvider(ABC):
             image_filename = f"{image_id}{image_format}"
             file_path = IMAGE_CACHE_DIR / image_filename
 
-            async with aiofiles.open(file_path, "wb") as f:
-                await f.write(img_data)
+            with open(file_path, "wb") as f:
+                f.write(img_data)
 
             log.info(f"Image saved as {file_path}")
             return image_filename
@@ -72,7 +71,7 @@ class BaseImageProvider(ABC):
             log.exception(f"Error saving base64 image: {e}")
             return None
 
-    async def save_url_image(self, url: str) -> Optional[str]:
+    def save_url_image(self, url: str) -> Optional[str]:
         """
         Save an image from a URL to the cache directory.
 
@@ -84,8 +83,8 @@ class BaseImageProvider(ABC):
         """
         try:
             image_id = str(uuid.uuid4())
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url, timeout=30.0)
+            with httpx.Client() as client:
+                response = client.get(url, timeout=30.0)
                 response.raise_for_status()
 
                 if not response.headers.get("content-type", "").startswith("image"):
@@ -97,8 +96,8 @@ class BaseImageProvider(ABC):
                 image_filename = f"{image_id}{image_format}"
                 file_path = IMAGE_CACHE_DIR / image_filename
 
-                async with aiofiles.open(file_path, "wb") as f:
-                    await f.write(response.content)
+                with open(file_path, "wb") as f:
+                    f.write(response.content)
 
             log.info(f"Image downloaded and saved as {file_path}")
             return image_filename
@@ -122,8 +121,21 @@ class BaseImageProvider(ABC):
             return mime_type
         return "image/png"
 
+    def get_config(self) -> Dict[str, Optional[str]]:
+        """
+        Return provider-specific configuration details.
+
+        Returns:
+            Dict[str, Optional[str]]: Provider-specific configuration details.
+        """
+        return {
+            "base_url": self.base_url,
+            "api_key": self.api_key,
+            "additional_headers": self.additional_headers,
+        }
+
     @abstractmethod
-    async def generate_image(
+    def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
@@ -141,7 +153,7 @@ class BaseImageProvider(ABC):
         pass
 
     @abstractmethod
-    async def list_models(self) -> List[Dict[str, str]]:
+    def list_models(self) -> List[Dict[str, str]]:
         """
         Abstract method to list available models. Must be implemented by subclasses.
 

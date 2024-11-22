@@ -1475,7 +1475,7 @@ IMAGES_TOGETHERAI_BASE_URL = PersistentConfig(
     "image_generation.together_ai.base_url",
     os.getenv("IMAGES_TOGETHERAI_BASE_URL", "https://api.together.xyz/v1/images"),
 )
-IMAGES_TOGETHER_AI_API_KEY = PersistentConfig(
+IMAGES_TOGETHERAI_API_KEY = PersistentConfig(
     "IMAGES_TOGETHERAI_API_KEY",
     "image_generation.together_ai.api_key",
     os.getenv("IMAGES_TOGETHERAI_API_KEY", ""),
