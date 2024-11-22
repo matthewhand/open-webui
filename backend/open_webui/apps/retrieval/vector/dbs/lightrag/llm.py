@@ -6,6 +6,7 @@ import numpy as np
 from typing import List
 import logging
 
+
 # Ensure the logger is properly configured
 logger = logging.getLogger("wrapped_openai_embedding")
 logger.setLevel(logging.DEBUG)

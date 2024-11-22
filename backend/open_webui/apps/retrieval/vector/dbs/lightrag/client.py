@@ -16,10 +16,13 @@ from .utils import (
     truncate_vectors_for_logging,
     convert_response_to_json,
 )
-
 from .llm import wrapped_openai_embedding
 from lightrag import LightRAG, QueryParam
 from lightrag.llm import gpt_4o_mini_complete
+
+# Import the custom client and storage classes
+from .custom_lightrag import CustomLightRAGClient
+from .custom_storage import CustomNanoVectorDBStorage
 
 # Initialize logger
 logger = logging.getLogger("lightrag_client")
@@ -150,6 +153,9 @@ class LightRAGClient:
     # AsyncRunner instance
     async_runner: AsyncRunner = field(default_factory=AsyncRunner, init=False)
 
+    # Initialize the custom client
+    custom_client: CustomLightRAGClient = field(default_factory=CustomLightRAGClient, init=False)
+
     def __post_init__(self):
         """
         Post-initialization to set up logging and initialize the collections dictionary.
@@ -157,8 +163,8 @@ class LightRAGClient:
         logger.debug(f"Initializing LightRAGClient with working_dir: '{self.working_dir}'", extra={'request_id': 'N/A'})
         logger.debug(f"LightRAGClient parameters: {self._get_initial_config()}", extra={'request_id': 'N/A'})
 
-        # Initialize collections dict
-        self.collections: Dict[str, 'LightRAG'] = {}
+        # Initialize collections dict via custom client
+        self.collections = self.custom_client.lightrag_instance.collections
 
     def _get_initial_config(self) -> Dict[str, Union[str, int, Dict, bool]]:
         """
@@ -172,7 +178,8 @@ class LightRAGClient:
             'embedding_func',
             'llm_model_func',
             'convert_response_to_json_func',
-            'collections'
+            'collections',
+            'custom_client'
         }
         config_dict = {f.name: getattr(self, f.name) for f in fields(self) if f.name not in exclude_fields}
         return config_dict
@@ -195,66 +202,7 @@ class LightRAGClient:
         """
         Retrieve or initialize a LightRAG instance for the specified collection.
         """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"Retrieving LightRAG instance for collection: '{collection_name}'", extra={'request_id': request_id})
-        logger.debug(f"Working directory: '{self.working_dir}' (type: {type(self.working_dir)})", extra={'request_id': request_id})
-
-        # Validate working_dir and collection_name
-        if not isinstance(self.working_dir, str):
-            logger.error(f"working_dir must be a string, got {type(self.working_dir)}: {self.working_dir}", extra={'request_id': request_id})
-            raise TypeError(f"working_dir must be a string, got {type(self.working_dir)}")
-
-        if not isinstance(collection_name, str):
-            logger.error(f"collection_name must be a string, got {type(collection_name)}: {collection_name}", extra={'request_id': request_id})
-            raise TypeError(f"collection_name must be a string, got {type(collection_name)}")
-
-        if not collection_name.strip():
-            logger.error("Collection name cannot be empty or whitespace.", extra={'request_id': request_id})
-            raise ValueError("Collection name cannot be empty or whitespace.")
-
-        collection_working_dir = os.path.join(self.working_dir, collection_name)
-        logger.debug(f"Collection working directory: '{collection_working_dir}'", extra={'request_id': request_id})
-
-        # Ensure the directory exists
-        try:
-            os.makedirs(collection_working_dir, exist_ok=True)
-            logger.debug(f"Ensured existence of directory: '{collection_working_dir}'", extra={'request_id': request_id})
-        except Exception as e:
-            logger.error(f"Failed to create directory '{collection_working_dir}': {e}", extra={'request_id': request_id})
-            raise
-
-        if collection_name not in self.collections:
-            try:
-                lightrag_instance = LightRAG(
-                    working_dir=collection_working_dir,
-                    llm_model_func=self.llm_model_func,
-                    embedding_func=self.embedding_func,
-                    log_level=self.log_level,
-                    chunk_token_size=self.chunk_token_size,
-                    chunk_overlap_token_size=self.chunk_overlap_token_size,
-                    tiktoken_model_name=self.tiktoken_model_name,
-                    entity_extract_max_gleaning=self.entity_extract_max_gleaning,
-                    entity_summary_to_max_tokens=self.entity_summary_to_max_tokens,
-                    node_embedding_algorithm=self.node_embedding_algorithm,
-                    node2vec_params=self.node2vec_params,
-                    embedding_batch_num=self.embedding_batch_num,
-                    embedding_func_max_async=self.embedding_func_max_async,
-                    llm_model_max_token_size=self.llm_model_max_token_size,
-                    llm_model_max_async=self.llm_model_max_async,
-                    llm_model_kwargs=self.llm_model_kwargs,
-                    enable_llm_cache=self.enable_llm_cache,
-                    addon_params=self.addon_params,
-                    convert_response_to_json_func=self.convert_response_to_json_func,
-                )
-                self.collections[collection_name] = lightrag_instance
-                logger.info(f"Initialized LightRAG instance for collection '{collection_name}'.", extra={'request_id': request_id})
-            except Exception as e:
-                logger.error(f"Failed to initialize LightRAG instance for collection '{collection_name}': {e}", extra={'request_id': request_id})
-                raise
-        else:
-            logger.debug(f"Collection '{collection_name}' already exists.", extra={'request_id': request_id})
-
-        return self.collections[collection_name]
+        return self.custom_client.get_lightRAG_instance(collection_name)
 
     # --------------------- Asynchronous Methods ---------------------
 
@@ -269,58 +217,7 @@ class LightRAGClient:
         Returns:
             bool: True if insertion was successful, False otherwise.
         """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"Starting insert_async with items: {items}, collection_name: '{collection_name}'", extra={'request_id': request_id})
-
-        try:
-            # Implementing guard to handle different types of 'items'
-            if isinstance(items, dict):
-                logger.debug(f"Detected dictionary in items: {items}", extra={'request_id': request_id})
-                if not items:
-                    logger.error("Empty dictionary provided for insertion.", extra={'request_id': request_id})
-                    return False
-                # Convert dictionary values to strings
-                items = [str(value).strip() for value in items.values()]
-                logger.debug(f"Converted items from dict: {items}", extra={'request_id': request_id})
-            elif isinstance(items, str):
-                logger.debug(f"Detected string in items: '{items}'", extra={'request_id': request_id})
-                items = [items.strip()]
-                logger.debug(f"Converted items to list: {items}", extra={'request_id': request_id})
-            elif isinstance(items, list):
-                logger.debug(f"Detected list in items: {items}", extra={'request_id': request_id})
-                # Ensure all items in the list are strings
-                items = [str(item).strip() for item in items]
-                logger.debug(f"Sanitized items: {items}", extra={'request_id': request_id})
-            else:
-                logger.error(f"Unsupported type for items: {type(items)}. Expected str, list of str, or dict.", extra={'request_id': request_id})
-                return False
-
-            # Further sanitize items by removing empty strings
-            original_length = len(items)
-            items = [item for item in items if item]
-            sanitized_length = len(items)
-            if sanitized_length < original_length:
-                logger.warning(f"Removed {original_length - sanitized_length} empty or whitespace-only items.", extra={'request_id': request_id})
-
-            if not items:
-                logger.error("No valid documents to insert after sanitization.", extra={'request_id': request_id})
-                return False
-
-            logger.debug(f"Inserting {len(items)} documents into collection '{collection_name}'.", extra={'request_id': request_id})
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance.ainsert(items)
-            logger.debug("Insertion succeeded.", extra={'request_id': request_id})
-            return True
-        except AttributeError as e:
-            logger.error(f"Attribute error during insertion: {e}", extra={'request_id': request_id})
-            return False
-        except Exception as e:
-            logger.error(f"Failed to insert documents into collection '{collection_name}': {e}", extra={'request_id': request_id})
-            return False
-        finally:
-            logger.debug("Completed insert_async.", extra={'request_id': request_id})
-            if self.has_collection(collection_name):
-                await self._insert_done(collection_name)
+        return await self.custom_client.insert_async(items=items, collection_name=collection_name)
 
     # --------------------- Synchronous Methods ---------------------
 
@@ -375,113 +272,7 @@ class LightRAGClient:
         Returns:
             Optional[QueryResult]: The query result or an error message encapsulated in QueryResult.
         """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"Starting query_async with query: '{query}', collection_name: '{collection_name}', param: {param}, filter: {filter}", extra={'request_id': request_id})
-
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-
-            # Validate query
-            if not isinstance(query, str):
-                error_msg = "Query must be a string."
-                logger.error(f"{error_msg} Received type: {type(query)}", extra={'request_id': request_id})
-                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-
-            if not query.strip():
-                error_msg = "Query string cannot be empty."
-                logger.warning(f"{error_msg}", extra={'request_id': request_id})
-                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-
-            if filter:
-                # Validate filter structure
-                if not isinstance(filter, dict):
-                    error_msg = "Filter must be a dictionary."
-                    logger.error(f"{error_msg} Received type: {type(filter)}", extra={'request_id': request_id})
-                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-                if 'excluded_ids' in filter and not isinstance(filter['excluded_ids'], list):
-                    error_msg = "'excluded_ids' in filter must be a list."
-                    logger.error(f"{error_msg} Received type: {type(filter['excluded_ids'])}", extra={'request_id': request_id})
-                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-
-                logger.debug(f"Performing query with filter: {filter}", extra={'request_id': request_id})
-                response = await lightrag_instance.aquery(query, param)
-                logger.debug(f"Received response from aquery with filter: {response} (type: {type(response)})", extra={'request_id': request_id})
-
-                # Check if response has 'ids' attribute
-                if hasattr(response, 'ids') and response.ids and len(response.ids) > 0:
-                    excluded_ids = filter.get('excluded_ids', [])
-                    logger.debug(f"Excluded IDs: {excluded_ids}", extra={'request_id': request_id})
-
-                    # Filter out excluded IDs
-                    filtered_ids = [doc_id for doc_id in response.ids[0] if doc_id not in excluded_ids]
-                    logger.debug(f"Filtered IDs count: {len(filtered_ids)} out of {len(response.ids[0])}", extra={'request_id': request_id})
-
-                    # Calculate distances if necessary; for now, use placeholders
-                    distances = [0.0 for _ in filtered_ids]  # Placeholder distances
-
-                    # Fetch documents and metadata for filtered IDs
-                    documents = await lightrag_instance.afetch_documents(filtered_ids)
-                    metadatas = await lightrag_instance.afetch_metadatas(filtered_ids)
-
-                    return QueryResult(
-                        ids=[filtered_ids],
-                        embeddings=response.embeddings,
-                        metadatas=metadatas,
-                        documents=documents,
-                        distances=[[d for d in distances]],  # Wrap in list to match structure
-                        error=None
-                    )
-                else:
-                    error_msg = "No documents found for the given query."
-                    logger.error(f"{error_msg}", extra={'request_id': request_id})
-                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-            else:
-                # Perform a standard generative query
-                logger.debug("Performing standard query without filter.", extra={'request_id': request_id})
-                response = await lightrag_instance.aquery(query, param)
-                logger.debug(f"Received query response: {response} (type: {type(response)})", extra={'request_id': request_id})
-
-                # Check if response has 'ids' attribute
-                if hasattr(response, 'ids') and response.ids and len(response.ids) > 0:
-                    logger.debug(f"Returning QueryResult with IDs: {response.ids}", extra={'request_id': request_id})
-                    # Calculate distances if necessary; for now, use placeholders
-                    distances = [[0.0 for _ in ids] for ids in response.ids]  # Placeholder distances
-
-                    # Fetch documents and metadata for IDs
-                    documents = await lightrag_instance.afetch_documents(response.ids[0])
-                    metadatas = await lightrag_instance.afetch_metadatas(response.ids[0])
-
-                    return QueryResult(
-                        ids=response.ids,
-                        embeddings=response.embeddings,
-                        metadatas=metadatas,
-                        documents=documents,
-                        distances=distances,  # Include distances
-                        error=None
-                    )
-                elif isinstance(response, str):
-                    try:
-                        json_response = json.loads(response)
-                        if 'error' in json_response:
-                            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=json_response['error'])
-                        else:
-                            error_msg = "LLM returned an unexpected string response without an error key."
-                            logger.error(f"{error_msg} Content: {response}", extra={'request_id': request_id})
-                            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-                    except json.JSONDecodeError:
-                        error_msg = "Unexpected string response from query."
-                        logger.error(f"{error_msg} Content: {response}", extra={'request_id': request_id})
-                        return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-                else:
-                    error_msg = "Unexpected response format from query."
-                    logger.error(f"{error_msg} Response type: {type(response)}. Content: {response}", extra={'request_id': request_id})
-                    return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-        except Exception as e:
-            logger.error(f"Query failed for '{query}' with error: {e}", extra={'request_id': request_id})
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Internal server error during query processing.")
-        finally:
-            logger.debug("Completed query_async.", extra={'request_id': request_id})
-            await self._query_done(collection_name)
+        return await self.custom_client.query_async(query=query, collection_name=collection_name, param=param, filter=filter)
 
     def query(
         self,
@@ -536,133 +327,7 @@ class LightRAGClient:
         Returns:
             Optional[QueryResult]: The search result containing document IDs, embeddings, metadatas, documents, distances, or an error message encapsulated in QueryResult.
         """
-        request_id = str(uuid.uuid4())
-        truncated_vectors = truncate_vectors_for_logging(vectors)
-        logger.debug(f"Starting vector_search_async with vectors: {truncated_vectors}, limit: {limit}, collection_name: '{collection_name}'", extra={'request_id': request_id})
-
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-
-            # Access the appropriate vector storage; e.g., 'chunks_vdb'
-            vector_storage = getattr(lightrag_instance, 'chunks_vdb', None)
-            if vector_storage is None:
-                error_msg = f"Vector storage 'chunks_vdb' not found in collection '{collection_name}'."
-                logger.error(f"{error_msg}", extra={'request_id': request_id})
-                return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error=error_msg)
-
-            all_doc_ids = []
-            all_embeddings = []
-            all_metadatas = []
-            all_documents = []
-            all_distances = []
-
-            for idx, vector in enumerate(vectors):
-                truncated_vector = self._truncate_vector(vector)
-                logger.debug(f"Processing vector {idx + 1}/{len(vectors)}: {truncated_vector}", extra={'request_id': request_id})
-                try:
-                    # Ensure the vector is in list format and has correct dimensions
-                    if isinstance(vector, (list, tuple)):
-                        query_vector = vector
-                        logger.debug(f"Vector {idx + 1} is already a list.", extra={'request_id': request_id})
-                    else:
-                        logger.error(f"Unsupported vector type: {type(vector)}. Skipping this vector.", extra={'request_id': request_id})
-                        all_doc_ids.append([])
-                        all_embeddings.append([])
-                        all_metadatas.append([])
-                        all_documents.append([])
-                        all_distances.append([])
-                        continue
-
-                    # Validate embedding dimensions
-                    if len(query_vector) != self.embedding_func.embedding_dim:
-                        error_msg = f"Vector {idx + 1} has incorrect dimensions: {len(query_vector)}. Expected: {self.embedding_func.embedding_dim}."
-                        logger.error(f"{error_msg}", extra={'request_id': request_id})
-                        all_doc_ids.append([])
-                        all_embeddings.append([])
-                        all_metadatas.append([])
-                        all_documents.append([])
-                        all_distances.append([])
-                        continue
-
-                    # Log the query vector for debugging (truncated)
-                    logger.debug(f"Query Vector {idx + 1}: {truncated_vector}", extra={'request_id': request_id})
-
-                    # Perform similarity search using the vector storage's query method
-                    # Since vector_storage._client.query is synchronous, run it in a separate thread
-                    search_results = await asyncio.to_thread(
-                        vector_storage._client.query,
-                        query=query_vector,
-                        top_k=limit,
-                        better_than_threshold=0.0  # Temporarily set to 0.0 to include all results
-                    )
-                    logger.debug(f"Retrieved {len(search_results)} results for vector {idx + 1}", extra={'request_id': request_id})
-
-                    # Log the structure of search_results
-                    logger.debug(f"Search results structure for vector {idx + 1}: {search_results}", extra={'request_id': request_id})
-
-                    # Process search_results into QueryResult format
-                    if isinstance(search_results, list) and len(search_results) > 0:
-                        first_result = search_results[0]
-                        if isinstance(first_result, dict) and 'id' in first_result:
-                            # Assume list of dicts
-                            doc_ids = [result.get('id', 'unknown_id') for result in search_results]
-                            embeddings = [result.get('embedding', []) for result in search_results]
-                            metadatas = [result.get('metadata', {}) for result in search_results]
-                            documents = [result.get('document', '') for result in search_results]
-                            distances = [result.get('distance', 0.0) for result in search_results]
-                        elif isinstance(first_result, (tuple, list)) and len(first_result) >= 5:
-                            # Assume list of tuples/lists
-                            doc_ids = [result[0] for result in search_results]
-                            embeddings = [result[1] for result in search_results]
-                            metadatas = [result[2] for result in search_results]
-                            documents = [result[3] for result in search_results]
-                            distances = [result[4] for result in search_results]
-                        else:
-                            logger.error("Unexpected search_results structure.", extra={'request_id': request_id})
-                            doc_ids = []
-                            embeddings = []
-                            metadatas = []
-                            documents = []
-                            distances = []
-                    else:
-                        logger.warning("No results found for the given query vector.", extra={'request_id': request_id})
-                        doc_ids = []
-                        embeddings = []
-                        metadatas = []
-                        documents = []
-                        distances = []
-
-                    # Aggregate results
-                    all_doc_ids.append(doc_ids)
-                    all_embeddings.append(embeddings)
-                    all_metadatas.append(metadatas)
-                    all_documents.append(documents)
-                    all_distances.append(distances)
-
-                    logger.debug(f"Aggregated results for vector {idx + 1}: {doc_ids}", extra={'request_id': request_id})
-                except Exception as e:
-                    logger.error(f"Error during vector search for vector {idx + 1}: {e}", extra={'request_id': request_id})
-                    all_doc_ids.append([])
-                    all_embeddings.append([])
-                    all_metadatas.append([])
-                    all_documents.append([])
-                    all_distances.append([])
-
-            logger.debug("Vector search completed for all vectors.", extra={'request_id': request_id})
-            return QueryResult(
-                ids=all_doc_ids,
-                embeddings=all_embeddings,
-                metadatas=all_metadatas,
-                documents=all_documents,
-                distances=all_distances,  # Include distances
-                error=None
-            )
-        except Exception as e:
-            logger.error(f"Vector search failed with error: {e}", extra={'request_id': request_id})
-            return QueryResult(ids=[[]], embeddings=None, metadatas=None, documents=None, distances=[[]], error="Internal server error during vector search.")
-        finally:
-            logger.debug("Completed vector_search_async.", extra={'request_id': request_id})
-            await self._query_done(collection_name)
+        return await self.custom_client.vector_search_async(vectors=vectors, collection_name=collection_name, limit=limit)
 
     def vector_search(
         self,
@@ -687,7 +352,7 @@ class LightRAGClient:
         logger.debug(f"Calling synchronous vector_search with vectors: {truncated_vectors}, collection_name: '{collection_name}', limit: {limit}", extra={'request_id': request_id})
         try:
             result = self.async_runner.run(
-                self.vector_search_async(vectors, collection_name=collection_name, limit=limit),
+                self.vector_search_async(vectors=vectors, collection_name=collection_name, limit=limit),
                 request_id
             )
             logger.debug(f"Synchronous vector_search result: {result}", extra={'request_id': request_id})
@@ -741,20 +406,7 @@ class LightRAGClient:
         Returns:
             bool: True if deletion was successful, False otherwise.
         """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"Starting delete_by_entity_async with entity_name: '{entity_name}', collection_name: '{collection_name}'", extra={'request_id': request_id})
-
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance.adelete_by_entity(entity_name)
-            logger.debug(f"Successfully deleted entity '{entity_name}' from collection '{collection_name}'.", extra={'request_id': request_id})
-            return True
-        except Exception as e:
-            logger.error(f"Failed to delete entity '{entity_name}' from collection '{collection_name}': {e}", extra={'request_id': request_id})
-            return False
-        finally:
-            logger.debug("Completed delete_by_entity_async.", extra={'request_id': request_id})
-            await self._delete_by_entity_done(collection_name)
+        return await self.custom_client.delete_by_entity_async(entity_name, collection_name=collection_name)
 
     def delete_by_entity(self, entity_name: str, *, collection_name: str = "default") -> bool:
         """
@@ -789,14 +441,7 @@ class LightRAGClient:
         Args:
             collection_name (str): The name of the collection.
         """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"Starting _query_done for collection '{collection_name}'", extra={'request_id': request_id})
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance._query_done()
-            logger.debug(f"Completed query operations for collection '{collection_name}'.", extra={'request_id': request_id})
-        except Exception as e:
-            logger.error(f"Error in _query_done for collection '{collection_name}': {e}", extra={'request_id': request_id})
+        await self.custom_client._query_done(collection_name)
 
     async def _insert_done(self, collection_name: str):
         """
@@ -805,14 +450,7 @@ class LightRAGClient:
         Args:
             collection_name (str): The name of the collection.
         """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"Starting _insert_done for collection '{collection_name}'", extra={'request_id': request_id})
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance._insert_done()
-            logger.debug(f"Completed insert operations for collection '{collection_name}'.", extra={'request_id': request_id})
-        except Exception as e:
-            logger.error(f"Error in _insert_done for collection '{collection_name}': {e}", extra={'request_id': request_id})
+        await self.custom_client._insert_done(collection_name)
 
     async def _delete_by_entity_done(self, collection_name: str):
         """
@@ -821,14 +459,7 @@ class LightRAGClient:
         Args:
             collection_name (str): The name of the collection.
         """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"Starting _delete_by_entity_done for collection '{collection_name}'", extra={'request_id': request_id})
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            await lightrag_instance._delete_by_entity_done()
-            logger.debug(f"Completed delete operations for collection '{collection_name}'.", extra={'request_id': request_id})
-        except Exception as e:
-            logger.error(f"Error in _delete_by_entity_done for collection '{collection_name}': {e}", extra={'request_id': request_id})
+        await self.custom_client._delete_by_entity_done(collection_name)
 
     def _truncate_vector(self, vector: Union[List[float], list], max_elements: int = 3) -> str:
         """
@@ -1001,21 +632,7 @@ class LightRAGClient:
         Returns:
             Optional[List[str]]: List of vector IDs or None if an error occurs.
         """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"Starting list_vectors_async for collection '{collection_name}'", extra={'request_id': request_id})
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            vector_storage = getattr(lightrag_instance, 'chunks_vdb', None)
-            if vector_storage is None:
-                logger.error(f"Vector storage 'chunks_vdb' not found in collection '{collection_name}'.", extra={'request_id': request_id})
-                return None
-            # Assuming the vector storage client has a method to list vectors
-            all_vectors = await asyncio.to_thread(vector_storage._client.list_vectors)  # Adjust based on actual API
-            logger.debug(f"Retrieved vectors: {all_vectors}", extra={'request_id': request_id})
-            return all_vectors
-        except Exception as e:
-            logger.error(f"Failed to list vectors: {e}", extra={'request_id': request_id})
-            return None
+        return await self.custom_client.list_vectors_async(collection_name=collection_name)
 
     async def list_documents_async(self, collection_name: str = "default") -> Optional[List[Dict[str, Any]]]:
         """
@@ -1027,14 +644,4 @@ class LightRAGClient:
         Returns:
             Optional[List[Dict[str, Any]]]: List of documents or None if an error occurs.
         """
-        request_id = str(uuid.uuid4())
-        logger.debug(f"Starting list_documents_async for collection '{collection_name}'", extra={'request_id': request_id})
-        try:
-            lightrag_instance = self.get_lightRAG_instance(collection_name)
-            # Assuming the LightRAG instance has a method to list documents
-            all_documents = await lightrag_instance.alist_documents()  # Adjust based on actual API
-            logger.debug(f"Retrieved documents: {all_documents}", extra={'request_id': request_id})
-            return all_documents
-        except Exception as e:
-            logger.error(f"Failed to list documents: {e}", extra={'request_id': request_id})
-            return None
+        return await self.custom_client.list_documents_async(collection_name=collection_name)
