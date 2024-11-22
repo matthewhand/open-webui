@@ -1,7 +1,8 @@
-# backend/open_webui/apps/images/providers/registry.py
-
+import logging
 from typing import Type, Dict, Optional, List
 from .base import BaseImageProvider
+
+log = logging.getLogger(__name__)
 
 class ProviderRegistry:
     """
@@ -20,10 +21,19 @@ class ProviderRegistry:
         Args:
             name (str): The name of the provider (must be unique).
             provider_class (Type[BaseImageProvider]): The provider class to register.
+
+        Raises:
+            ValueError: If the provider name is already registered.
+            TypeError: If the provider class does not inherit from BaseImageProvider.
         """
         if name in cls._providers:
+            log.error(f"Provider '{name}' is already registered.")
             raise ValueError(f"Provider '{name}' is already registered.")
+        if not issubclass(provider_class, BaseImageProvider):
+            log.error(f"Provider '{name}' must inherit from BaseImageProvider.")
+            raise TypeError(f"Provider '{name}' must inherit from BaseImageProvider.")
         cls._providers[name] = provider_class
+        log.info(f"Provider '{name}' registered successfully.")
 
     @classmethod
     def get_provider(cls, name: str) -> Optional[Type[BaseImageProvider]]:
@@ -36,7 +46,10 @@ class ProviderRegistry:
         Returns:
             Optional[Type[BaseImageProvider]]: The provider class if found, otherwise None.
         """
-        return cls._providers.get(name)
+        provider = cls._providers.get(name)
+        if provider is None:
+            log.warning(f"Provider '{name}' not found.")
+        return provider
 
     @classmethod
     def list_providers(cls) -> List[str]:
@@ -46,7 +59,9 @@ class ProviderRegistry:
         Returns:
             List[str]: A list of registered provider names.
         """
-        return list(cls._providers.keys())
+        provider_list = list(cls._providers.keys())
+        log.debug(f"Registered providers: {provider_list}")
+        return provider_list
 
 
 # Instantiate the registry

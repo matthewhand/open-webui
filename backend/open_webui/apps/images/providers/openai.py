@@ -1,11 +1,12 @@
+# backend/open_webui/apps/images/providers/openai.py
+
 import logging
 from typing import List, Dict, Optional
 
 import httpx
-
+from open_webui.config import IMAGES_OPENAI_API_BASE_URL, IMAGES_OPENAI_API_KEY
 from .base import BaseImageProvider
 from .registry import provider_registry
-from open_webui.config import IMAGES_OPENAI_API_BASE_URL, IMAGES_OPENAI_API_KEY
 
 log = logging.getLogger(__name__)
 
@@ -20,10 +21,17 @@ class OpenAIProvider(BaseImageProvider):
         Initialize the OpenAI provider with its specific configuration.
         """
         super().__init__(
-            base_url=str(IMAGES_OPENAI_API_BASE_URL.value),
-            api_key=str(IMAGES_OPENAI_API_KEY.value),
-            additional_headers={},
+            base_url=IMAGES_OPENAI_API_BASE_URL.value,
+            api_key=IMAGES_OPENAI_API_KEY.value,
         )
+        log.debug(f"OpenAIProvider initialized with base_url: {self.base_url}")
+
+    def populate_config(self):
+        """
+        Populate the shared configuration with OpenAI-specific details.
+        """
+        IMAGES_OPENAI_API_BASE_URL.value = self.base_url
+        IMAGES_OPENAI_API_KEY.value = self.api_key
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -67,7 +75,7 @@ class OpenAIProvider(BaseImageProvider):
             for image in res.get("data", []):
                 b64_image = image.get("b64_json")
                 if b64_image:
-                    image_filename = await self.save_b64_image(b64_image)
+                    image_filename = self.save_b64_image(b64_image)
                     if image_filename:
                         images.append({"url": f"/cache/image/generations/{image_filename}"})
             return images
@@ -92,16 +100,36 @@ class OpenAIProvider(BaseImageProvider):
             {"id": "dall-e-3", "name": "DALL·E 3"},
         ]
 
-    def get_config(self) -> Dict[str, str]:
+    async def verify_url(self):
+        """
+        Verify the connectivity of OpenAI's API endpoint.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                # OpenAI doesn't have a specific status endpoint for image generation.
+                # We'll perform a simple request to list available models as a connectivity check.
+                response = await client.get(
+                    url=f"{self.base_url}/models",
+                    headers=self.headers,
+                    timeout=10.0,
+                )
+            response.raise_for_status()
+            models = response.json()
+            log.info(f"OpenAI API is reachable. Retrieved models: {models}")
+        except Exception as e:
+            log.error(f"Failed to verify OpenAI API: {e}")
+            raise Exception(f"Failed to verify OpenAI API: {e}")
+
+    def get_config(self) -> Dict[str, Optional[str]]:
         """
         Retrieve OpenAI-specific configuration details.
 
         Returns:
-            Dict[str, str]: OpenAI configuration details.
+            Dict[str, Optional[str]]: OpenAI configuration details.
         """
         return {
-            "OPENAI_API_BASE_URL": str(IMAGES_OPENAI_API_BASE_URL.value),
-            "OPENAI_API_KEY": str(IMAGES_OPENAI_API_KEY.value),
+            "IMAGES_OPENAI_API_BASE_URL": self.base_url,
+            "IMAGES_OPENAI_API_KEY": self.api_key,
         }
 
 

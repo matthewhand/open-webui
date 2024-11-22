@@ -1,16 +1,17 @@
+# backend/open_webui/apps/images/providers/huggingface.py
+
 import json
 import logging
 from typing import List, Dict, Optional
 
 import httpx
-
-from .base import BaseImageProvider
-from .registry import provider_registry
 from open_webui.config import (
     IMAGES_HUGGINGFACE_BASE_URL,
     IMAGES_HUGGINGFACE_API_KEY,
     IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS,
 )
+from .base import BaseImageProvider
+from .registry import provider_registry
 
 log = logging.getLogger(__name__)
 
@@ -24,17 +25,25 @@ class HuggingfaceProvider(BaseImageProvider):
         """
         Initialize the Huggingface provider with its specific configuration.
         """
+        super().__init__(
+            base_url=IMAGES_HUGGINGFACE_BASE_URL.value,
+            api_key=IMAGES_HUGGINGFACE_API_KEY.value,
+        )
         try:
-            additional_headers = json.loads(IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS.value)
+            self.additional_headers = json.loads(IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS)
         except json.JSONDecodeError:
             log.error("Failed to parse Huggingface additional headers. Defaulting to empty headers.")
-            additional_headers = {}
+            self.additional_headers = {}
 
-        super().__init__(
-            base_url=str(IMAGES_HUGGINGFACE_BASE_URL.value),
-            api_key=str(IMAGES_HUGGINGFACE_API_KEY.value),
-            additional_headers=additional_headers,
-        )
+        log.debug(f"HuggingfaceProvider initialized with base_url: {self.base_url}")
+
+    def populate_config(self):
+        """
+        Populate the shared configuration with Huggingface-specific details.
+        """
+        IMAGES_HUGGINGFACE_BASE_URL.value = self.base_url
+        IMAGES_HUGGINGFACE_API_KEY.value = self.api_key
+        IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS.value = json.dumps(self.additional_headers)
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -55,7 +64,7 @@ class HuggingfaceProvider(BaseImageProvider):
         payload = {
             "inputs": prompt,
             "parameters": {
-                "num_inference_steps": int(self.additional_headers.get("num_inference_steps", 50)),
+                "num_inference_steps": self.additional_headers.get("num_inference_steps", 50),
                 "negative_prompt": negative_prompt or "",
                 "width": width,
                 "height": height,
@@ -63,7 +72,7 @@ class HuggingfaceProvider(BaseImageProvider):
             },
         }
 
-        log.debug(f"HuggingfaceProvider Payload: {payload}")
+        log.debug(f"HuggingfaceProvider Payload: {json.dumps(payload, indent=2)}")
 
         try:
             async with httpx.AsyncClient() as client:
@@ -76,13 +85,13 @@ class HuggingfaceProvider(BaseImageProvider):
             log.debug(f"HuggingfaceProvider Response Status: {response.status_code}")
             response.raise_for_status()
             res = response.json()
-            log.debug(f"HuggingfaceProvider Response: {res}")
+            log.debug(f"HuggingfaceProvider Response: {json.dumps(res, indent=2)}")
 
             images = []
             for img in res.get("data", []):
-                if "b64_json" in img:
-                    b64_image = img["b64_json"]
-                    image_filename = await self.save_b64_image(b64_image)
+                b64_image = img.get("b64_json")
+                if b64_image:
+                    image_filename = self.save_b64_image(b64_image)
                     if image_filename:
                         images.append({"url": f"/cache/image/generations/{image_filename}"})
             return images
@@ -104,29 +113,30 @@ class HuggingfaceProvider(BaseImageProvider):
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.get(
-                    url=self.base_url,
+                    url=f"{self.base_url}/models",
                     headers=self.headers,
                     timeout=30.0,
                 )
             response.raise_for_status()
             models = response.json()
-            # Adjust based on actual response structure
-            return [{"id": model["id"], "name": model["name"]} for model in models]
+
+            log.debug(f"HuggingfaceProvider Models Response: {json.dumps(models, indent=2)}")
+            return [{"id": model.get("id", "unknown"), "name": model.get("name", "unknown")} for model in models]
         except Exception as e:
             log.error(f"Error listing Huggingface models: {e}")
             return []
 
-    def get_config(self) -> Dict[str, str]:
+    def get_config(self) -> Dict[str, Optional[str]]:
         """
         Retrieve Huggingface-specific configuration details.
 
         Returns:
-            Dict[str, str]: Huggingface configuration details.
+            Dict[str, Optional[str]]: Huggingface configuration details.
         """
         return {
-            "base_url": str(IMAGES_HUGGINGFACE_BASE_URL.value),
-            "api_key": str(IMAGES_HUGGINGFACE_API_KEY.value),
-            "additional_headers": IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS.value,
+            "IMAGES_HUGGINGFACE_BASE_URL": self.base_url,
+            "IMAGES_HUGGINGFACE_API_KEY": self.api_key,
+            "IMAGES_HUGGINGFACE_ADDITIONAL_HEADERS": json.dumps(self.additional_headers),
         }
 
 

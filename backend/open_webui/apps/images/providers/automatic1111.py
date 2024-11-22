@@ -1,5 +1,6 @@
+# backend/open_webui/apps/images/providers/automatic1111.py
+
 import logging
-import json
 from typing import List, Dict, Optional
 
 import httpx
@@ -7,8 +8,8 @@ import httpx
 from .base import BaseImageProvider
 from .registry import provider_registry
 from open_webui.config import (
-    AUTOMATIC1111_API_AUTH,
     AUTOMATIC1111_BASE_URL,
+    AUTOMATIC1111_API_AUTH,
     AUTOMATIC1111_CFG_SCALE,
     AUTOMATIC1111_SAMPLER,
     AUTOMATIC1111_SCHEDULER,
@@ -22,15 +23,35 @@ class Automatic1111Provider(BaseImageProvider):
     Provider for AUTOMATIC1111-based image generation.
     """
 
-    def __init__(self):
+    def __init__(self, config: AppConfig):
         """
-        Initialize the AUTOMATIC1111 provider with its specific configuration.
+        Initialize the Automatic1111 provider with its specific configuration.
+
+        Args:
+            config (AppConfig): The global application configuration object.
         """
-        super().__init__(
-            base_url=str(AUTOMATIC1111_BASE_URL.value),
-            api_key=str(AUTOMATIC1111_API_AUTH.value),
-            additional_headers={},  # Add any additional headers if required
-        )
+        super().__init__(config=config)
+        self.base_url = self.config.AUTOMATIC1111_BASE_URL
+        self.api_key = self.config.AUTOMATIC1111_API_AUTH
+        self.cfg_scale = self.config.AUTOMATIC1111_CFG_SCALE or 7.5
+        self.sampler = self.config.AUTOMATIC1111_SAMPLER or "Euler"
+        self.scheduler = self.config.AUTOMATIC1111_SCHEDULER or "normal"
+
+        # Initialize headers, including authorization if API key is provided
+        self.headers = {
+            "Content-Type": "application/json",
+        }
+        if self.api_key:
+            self.headers["Authorization"] = f"Bearer {self.api_key}"
+
+        log.debug(f"Automatic1111Provider initialized with base_url: {self.base_url}")
+
+    def populate_config(self):
+        """
+        Populate the shared configuration with AUTOMATIC1111-specific details.
+        """
+        # Configuration is managed via PersistentConfig; no need to set it here.
+        pass
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -53,9 +74,9 @@ class Automatic1111Provider(BaseImageProvider):
             "batch_size": n,
             "width": width,
             "height": height,
-            "cfg_scale": float(AUTOMATIC1111_CFG_SCALE.value),
-            "sampler_name": str(AUTOMATIC1111_SAMPLER.value),
-            "scheduler": str(AUTOMATIC1111_SCHEDULER.value),
+            "cfg_scale": float(self.cfg_scale),
+            "sampler_name": self.sampler,
+            "scheduler": self.scheduler,
         }
 
         if negative_prompt:
@@ -78,7 +99,7 @@ class Automatic1111Provider(BaseImageProvider):
 
             images = []
             for img in res.get("images", []):
-                image_filename = await self.save_b64_image(img)
+                image_filename = self.save_b64_image(img)
                 if image_filename:
                     images.append({"url": f"/cache/image/generations/{image_filename}"})
             return images
@@ -106,10 +127,25 @@ class Automatic1111Provider(BaseImageProvider):
                 )
             response.raise_for_status()
             models = response.json()
-            return [{"id": model["title"], "name": model["model_name"]} for model in models]
+            log.debug(f"Automatic1111Provider Models Response: {models}")
+            return [{"id": model.get("title", "unknown"), "name": model.get("model_name", "unknown")} for model in models]
         except Exception as e:
             log.error(f"Error listing AUTOMATIC1111 models: {e}")
             return []
+
+    async def verify_url(self):
+        """
+        Verify the connectivity of AUTOMATIC1111's API endpoint.
+        """
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(f"{self.base_url}/sdapi/v1/status", headers=self.headers, timeout=10.0)
+            response.raise_for_status()
+            status = response.json()
+            log.info(f"AUTOMATIC1111 API Status: {status}")
+        except Exception as e:
+            log.error(f"Failed to verify AUTOMATIC1111 API: {e}")
+            raise Exception(f"Failed to verify AUTOMATIC1111 API: {e}")
 
     def get_config(self) -> Dict[str, Optional[str]]:
         """
@@ -119,11 +155,11 @@ class Automatic1111Provider(BaseImageProvider):
             Dict[str, Optional[str]]: Configuration details specific to AUTOMATIC1111.
         """
         return {
-            "AUTOMATIC1111_BASE_URL": str(AUTOMATIC1111_BASE_URL.value),
-            "AUTOMATIC1111_API_AUTH": str(AUTOMATIC1111_API_AUTH.value),
-            "AUTOMATIC1111_CFG_SCALE": str(AUTOMATIC1111_CFG_SCALE.value),
-            "AUTOMATIC1111_SAMPLER": str(AUTOMATIC1111_SAMPLER.value),
-            "AUTOMATIC1111_SCHEDULER": str(AUTOMATIC1111_SCHEDULER.value),
+            "AUTOMATIC1111_BASE_URL": self.base_url,
+            "AUTOMATIC1111_API_AUTH": self.api_key,
+            "AUTOMATIC1111_CFG_SCALE": self.cfg_scale,
+            "AUTOMATIC1111_SAMPLER": self.sampler,
+            "AUTOMATIC1111_SCHEDULER": self.scheduler,
         }
 
 

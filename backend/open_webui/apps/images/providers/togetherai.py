@@ -1,14 +1,13 @@
+# backend/open_webui/apps/images/providers/togetherai.py
+
+import json
 import logging
 from typing import List, Dict, Optional
 
 import httpx
-
+from open_webui.config import IMAGES_TOGETHERAI_BASE_URL, IMAGES_TOGETHERAI_API_KEY
 from .base import BaseImageProvider
 from .registry import provider_registry
-from open_webui.config import (
-    IMAGES_TOGETHERAI_BASE_URL,
-    IMAGES_TOGETHERAI_API_KEY,
-)
 
 log = logging.getLogger(__name__)
 
@@ -23,10 +22,17 @@ class TogetherAIProvider(BaseImageProvider):
         Initialize TogetherAI provider with its specific configuration.
         """
         super().__init__(
-            base_url=str(IMAGES_TOGETHERAI_BASE_URL.value),
-            api_key=str(IMAGES_TOGETHERAI_API_KEY.value),
-            additional_headers={},  # Add any additional headers if required
+            base_url=IMAGES_TOGETHERAI_BASE_URL.value,
+            api_key=IMAGES_TOGETHERAI_API_KEY.value,
         )
+        log.debug(f"TogetherAIProvider initialized with base_url: {self.base_url}")
+
+    def populate_config(self):
+        """
+        Populate the shared configuration with TogetherAI-specific details.
+        """
+        IMAGES_TOGETHERAI_BASE_URL.value = self.base_url
+        IMAGES_TOGETHERAI_API_KEY.value = self.api_key
 
     async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -48,17 +54,18 @@ class TogetherAIProvider(BaseImageProvider):
             "prompt": prompt,
             "width": width,
             "height": height,
-            "steps": self.additional_headers.get("steps", 50),
+            "steps": int(self.additional_headers.get("steps", 50)),
             "n": n,
+            "negative_prompt": negative_prompt or "",
             "response_format": "b64_json",
         }
 
-        log.debug(f"TogetherAIProvider Payload: {payload}")
+        log.debug(f"TogetherAIProvider Payload: {json.dumps(payload, indent=2)}")
 
         try:
             async with httpx.AsyncClient() as client:
                 response = await client.post(
-                    url=self.base_url,
+                    url=f"{self.base_url}/generate",
                     headers=self.headers,
                     json=payload,
                     timeout=120.0,
@@ -66,13 +73,13 @@ class TogetherAIProvider(BaseImageProvider):
             log.debug(f"TogetherAIProvider Response Status: {response.status_code}")
             response.raise_for_status()
             res = response.json()
-            log.debug(f"TogetherAIProvider Response: {res}")
+            log.debug(f"TogetherAIProvider Response: {json.dumps(res, indent=2)}")
 
             images = []
             for img in res.get("images", []):
                 b64_image = img.get("b64_json")
                 if b64_image:
-                    image_filename = await self.save_b64_image(b64_image)
+                    image_filename = self.save_b64_image(b64_image)
                     if image_filename:
                         images.append({"url": f"/cache/image/generations/{image_filename}"})
             return images
@@ -100,21 +107,22 @@ class TogetherAIProvider(BaseImageProvider):
                 )
             response.raise_for_status()
             models = response.json()
-            return [{"id": model["id"], "name": model["name"]} for model in models]
+            log.debug(f"TogetherAIProvider Models Response: {json.dumps(models, indent=2)}")
+            return [{"id": model.get("id", "unknown"), "name": model.get("name", "unknown")} for model in models]
         except Exception as e:
             log.error(f"Error listing TogetherAI models: {e}")
             return []
 
-    def get_config(self) -> Dict[str, str]:
+    def get_config(self) -> Dict[str, Optional[str]]:
         """
         Retrieve TogetherAI-specific configuration details.
 
         Returns:
-            Dict[str, str]: Configuration details specific to TogetherAI.
+            Dict[str, Optional[str]]: TogetherAI configuration details.
         """
         return {
-            "base_url": str(IMAGES_TOGETHERAI_BASE_URL.value),
-            "api_key": str(IMAGES_TOGETHERAI_API_KEY.value),
+            "IMAGES_TOGETHERAI_BASE_URL": self.base_url,
+            "IMAGES_TOGETHERAI_API_KEY": self.api_key,
         }
 
 

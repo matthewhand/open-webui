@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List, Dict, Optional
 
 import httpx
-from open_webui.config import CACHE_DIR
+from open_webui.config import AppConfig, CACHE_DIR
 
 log = logging.getLogger(__name__)
 
@@ -24,11 +24,24 @@ class BaseImageProvider(ABC):
     Provides common functionality for saving images and managing headers.
     """
 
-    def __init__(self, base_url: str, api_key: str, additional_headers: Optional[Dict[str, str]] = None):
-        self.base_url = base_url
-        self.api_key = api_key
-        self.additional_headers = additional_headers or {}
+    def __init__(
+        self,
+        config: AppConfig,
+    ):
+        """
+        Initialize the provider with shared configurations.
+
+        Args:
+            config (AppConfig): Shared configuration object.
+        """
+        self.config = config
+        self.base_url = ""
+        self.api_key = ""
+        self.additional_headers = {}
         self.headers = self._construct_headers()
+
+        # Ensure subclass implements populate_config
+        self.populate_config()
 
     def _construct_headers(self) -> Dict[str, str]:
         """
@@ -38,11 +51,19 @@ class BaseImageProvider(ABC):
             Dict[str, str]: A dictionary of HTTP headers.
         """
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self.api_key}" if self.api_key else "",
             "Content-Type": "application/json",
         }
         headers.update(self.additional_headers)
         return headers
+
+    @abstractmethod
+    def populate_config(self):
+        """
+        Populate the shared configuration with provider-specific details.
+        This method must be implemented by subclasses to define their configuration logic.
+        """
+        pass
 
     def save_b64_image(self, b64_str: str) -> Optional[str]:
         """
@@ -135,7 +156,7 @@ class BaseImageProvider(ABC):
         }
 
     @abstractmethod
-    def generate_image(
+    async def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
@@ -153,11 +174,19 @@ class BaseImageProvider(ABC):
         pass
 
     @abstractmethod
-    def list_models(self) -> List[Dict[str, str]]:
+    async def list_models(self) -> List[Dict[str, str]]:
         """
         Abstract method to list available models. Must be implemented by subclasses.
 
         Returns:
             List[Dict[str, str]]: List of available models with 'id' and 'name'.
+        """
+        pass
+
+    @abstractmethod
+    async def verify_url(self):
+        """
+        Abstract method to verify the connectivity of the provider's API endpoint.
+        Must be implemented by subclasses.
         """
         pass
