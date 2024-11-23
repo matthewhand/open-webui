@@ -5,7 +5,7 @@ import logging
 from typing import List, Dict, Optional
 
 import httpx
-from open_webui.config import IMAGES_HUGGINGFACE_BASE_URL, IMAGES_HUGGINGFACE_API_KEY
+from open_webui.config import IMAGES_HUGGINGFACE_BASE_URL, IMAGES_HUGGINGFACE_API_KEY, AppConfig
 from .base import BaseImageProvider
 from .registry import provider_registry
 
@@ -23,8 +23,8 @@ class HuggingfaceProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "IMAGES_HUGGINGFACE_BASE_URL", "value": IMAGES_HUGGINGFACE_BASE_URL.value, "required": True},
-            {"key": "IMAGES_HUGGINGFACE_API_KEY", "value": IMAGES_HUGGINGFACE_API_KEY.value, "required": True},
+            {"key": "IMAGES_HUGGINGFACE_BASE_URL", "value": getattr(self.config, "IMAGES_HUGGINGFACE_BASE_URL", "").value, "required": True},
+            {"key": "IMAGES_HUGGINGFACE_API_KEY", "value": getattr(self.config, "IMAGES_HUGGINGFACE_API_KEY", "").value, "required": True},
         ]
 
         for config in config_items:
@@ -166,6 +166,27 @@ class HuggingfaceProvider(BaseImageProvider):
             "HUGGINGFACE_API_KEY": self.api_key,
         }
 
+    def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
+        """
+        Update the shared AppConfig based on form data for Huggingface provider.
 
-# Register the provider
-provider_registry.register("huggingface", HuggingfaceProvider)
+        Args:
+            form_data (Dict): The form data submitted by the user.
+            app_config (AppConfig): The shared configuration object.
+        """
+        log.debug("HuggingfaceProvider updating configuration.")
+        engine = form_data.get("engine", "").lower()
+        if engine != "huggingface":
+            log.debug("HuggingfaceProvider: Engine not set to 'huggingface'; skipping config update.")
+            return
+
+        # Huggingface may not have models to set via the provider, but can update image_size and image_steps
+        if form_data.get("image_size"):
+            app_config.IMAGE_SIZE.value = form_data["image_size"]
+            # app_config.IMAGE_SIZE.save()
+            log.debug(f"HuggingfaceProvider: IMAGE_SIZE updated to {form_data['image_size']}")
+
+        if form_data.get("image_steps") is not None:
+            app_config.IMAGE_STEPS.value = form_data["image_steps"]
+            # app_config.IMAGE_STEPS.save()
+            log.debug(f"HuggingfaceProvider: IMAGE_STEPS updated to {form_data['image_steps']}")

@@ -1,3 +1,5 @@
+# backend/open_webui/apps/images/providers/base.py
+
 import base64
 import logging
 import mimetypes
@@ -29,8 +31,8 @@ class BaseImageProvider(ABC):
         Args:
             config (AppConfig): Shared configuration object.
         """
-        log.debug("Initializing BaseImageProvider...")
         self.config = config
+        log.debug(f"Initializing {self.__class__.__name__} with config: {config}")
         # Ensure subclass implements populate_config
         self.populate_config()
         self.headers = self._construct_headers()
@@ -195,5 +197,17 @@ class BaseImageProvider(ABC):
         """
         Abstract method to verify the connectivity of the provider's API endpoint.
         Must be implemented by subclasses.
+        """
+        pass
+
+    @abstractmethod
+    def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
+        """
+        Abstract method to update the shared AppConfig based on form data.
+        Must be implemented by subclasses.
+
+        Args:
+            form_data (Dict): The form data submitted by the user.
+            app_config (AppConfig): The shared configuration object.
         """
         pass

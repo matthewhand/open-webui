@@ -36,7 +36,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # Include this in your main script to ensure proper logging
-log.debug("Image aplication starting...")
+log.debug("Image application starting...")
 
 # FastAPI setup
 app = FastAPI(
@@ -95,13 +95,13 @@ log.info("Initializing providers...")
 for provider_name in provider_registry.list_providers():
     provider_key = provider_name.lower()
 
-    # Skip providers not listed in IMAGE_ENABLED_PROVIDERS_LIST if it's set
+    log.debug(f"Attempting to load provider: {provider_name}")
+
+    # Check if provider is enabled
     if IMAGE_ENABLED_PROVIDERS_LIST and provider_key not in [
         p.lower() for p in IMAGE_ENABLED_PROVIDERS_LIST
     ]:
-        log.info(
-            f"Provider '{provider_name}' is not listed in IMAGE_ENABLED_PROVIDERS and will be skipped."
-        )
+        log.info(f"Skipping provider '{provider_name}' as it's not in the enabled list.")
         continue
 
     provider_class = provider_registry.get_provider(provider_name)
@@ -110,22 +110,15 @@ for provider_name in provider_registry.list_providers():
         continue
 
     try:
-        # Instantiate provider with shared configuration
+        # Attempt to initialize the provider
         provider_instance = provider_class(config=app.state.config)
-
-        # # Validate the provider configuration
-        # if not provider_instance.validate_config():
-        #     log.warning(f"Provider '{provider_name}' configuration validation failed.")
-        #     # No need to raise an exception here; validation happens on save.
-        # else:
-        #     log.info(f"Provider '{provider_name}' configuration validated.")
-
         PROVIDERS[provider_key] = provider_instance
-        
+        log.info(f"Successfully loaded provider: {provider_name}")
     except Exception as e:
-        log.error(f"Failed to load provider '{provider_name}': {e}", exc_info=True)
+        log.error(f"Failed to initialize provider '{provider_name}': {e}", exc_info=True)
 
-log.info("Provider initialization completed.")
+log.info(f"Provider initialization completed. Loaded providers: {list(PROVIDERS.keys())}")
+
 
 # Custom Exception Handlers
 
@@ -141,24 +134,27 @@ def validation_exception_handler(request: Request, exc: RequestValidationError):
         },
     )
 
-# # Middleware for request logging
-# @app.middleware("http")
-# async def log_requests(request: Request, call_next):
-#     log.debug(f"Incoming request: {request.method} {request.url}")
-#     try:
-#         body = await request.body()
-#         if body:
-#             log.debug(f"Request body: {body.decode('utf-8')}")
-#         else:
-#             log.debug("Request body is empty.")
-#     except Exception as e:
-#         log.debug(f"Failed to read request body: {e}")
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    log.debug(f"Incoming request: {request.method} {request.url}")
 
-#     # Await the response
-#     response = await call_next(request)
- 
-#     log.debug(f"Response status: {response.status_code}")
-#     return response
+    try:
+        # Debug request body
+        body = await request.body()
+        if body:
+            log.debug(f"Request body: {body.decode('utf-8')}")
+        else:
+            log.debug("Request body is empty.")
+    except Exception as e:
+        log.warning(f"Failed to read request body: {e}")
+
+    try:
+        response = await call_next(request)
+        log.debug(f"Response status: {response.status_code}")
+        return response
+    except Exception as e:
+        log.error(f"Middleware error: {e}")
+        raise e
 
 # Routes
 
@@ -184,6 +180,7 @@ def get_config(user=Depends(get_admin_user)):
     return combined_config
 
 
+
 @app.post("/config/update")
 def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
     """Update application configuration."""
@@ -191,9 +188,10 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
         log.debug(f"Updating configuration with data: {form_data.dict()}")
 
         # Update ENABLE_IMAGE_GENERATION
-        ENABLE_IMAGE_GENERATION.value = form_data.enabled
-        ENABLE_IMAGE_GENERATION.save()
-        log.debug(f"Set ENABLE_IMAGE_GENERATION to {form_data.enabled}")
+        if form_data.enabled is not None:
+            ENABLE_IMAGE_GENERATION.value = form_data.enabled
+            ENABLE_IMAGE_GENERATION.save()
+            log.debug(f"Set ENABLE_IMAGE_GENERATION to {form_data.enabled}")
 
         # Update IMAGE_GENERATION_ENGINE if provided
         if form_data.engine:
@@ -204,14 +202,17 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
             IMAGE_GENERATION_ENGINE.save()
             log.debug(f"Set IMAGE_GENERATION_ENGINE to {new_engine}")
 
-            ## Validate only the newly selected engine
-            #active_provider: Optional[BaseImageProvider] = PROVIDERS.get(new_engine)
-            # if active_provider and not active_provider.validate_config():
-            #     log.error(f"Engine '{new_engine}' is not properly configured.")
-            #     raise HTTPException(
-            #         status_code=400,
-            #         detail=f"Engine '{new_engine}' is not properly configured."
-            #     )
+            # Call the new active provider's update_config_in_app
+            active_provider: Optional[BaseImageProvider] = PROVIDERS.get(new_engine)
+            if active_provider:
+                active_provider.update_config_in_app(form_data.dict(), app.state.config)
+                log.debug(f"Provider '{new_engine}' configuration updated via update_config_in_app.")
+            else:
+                log.error(f"Engine '{new_engine}' is not properly configured.")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Engine '{new_engine}' is not properly configured."
+                )
 
         # Update IMAGE_GENERATION_MODEL if provided
         if form_data.model:
@@ -241,6 +242,7 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
 
     log.debug("Configuration update completed successfully.")
     return {"message": "Configuration updated successfully."}
+
 
 @app.post("/image/config/update")
 def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)):

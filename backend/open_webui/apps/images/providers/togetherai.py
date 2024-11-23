@@ -5,7 +5,7 @@ import logging
 from typing import List, Dict, Optional
 
 import httpx
-from open_webui.config import IMAGES_TOGETHERAI_BASE_URL, IMAGES_TOGETHERAI_API_KEY
+from open_webui.config import IMAGES_TOGETHERAI_BASE_URL, IMAGES_TOGETHERAI_API_KEY, AppConfig
 from .base import BaseImageProvider
 from .registry import provider_registry
 
@@ -23,8 +23,8 @@ class TogetherAIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "IMAGES_TOGETHERAI_BASE_URL", "value": IMAGES_TOGETHERAI_BASE_URL.value, "required": True},
-            {"key": "IMAGES_TOGETHERAI_API_KEY", "value": IMAGES_TOGETHERAI_API_KEY.value, "required": True},
+            {"key": "IMAGES_TOGETHERAI_BASE_URL", "value": getattr(self.config, "IMAGES_TOGETHERAI_BASE_URL", "").value, "required": True},
+            {"key": "IMAGES_TOGETHERAI_API_KEY", "value": getattr(self.config, "IMAGES_TOGETHERAI_API_KEY", "").value, "required": True},
         ]
 
         for config in config_items:
@@ -134,7 +134,7 @@ class TogetherAIProvider(BaseImageProvider):
 
     def verify_url(self):
         """
-        Verify connectivity to the TogetherAI API endpoint.
+        Verify the connectivity of the TogetherAI API endpoint.
         """
         if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
             log.error("TogetherAIProvider is not configured properly.")
@@ -157,10 +157,31 @@ class TogetherAIProvider(BaseImageProvider):
             Dict[str, Optional[str]]: TogetherAI configuration details.
         """
         return {
-            "TOGETHERAI_BASE_URL": getattr(self, 'base_url', None),
+            "TOGETHERAI_BASE_URL": self.base_url,
             "TOGETHERAI_API_KEY": self.api_key,
         }
 
+    def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
+        """
+        Update the shared AppConfig based on form data for TogetherAI provider.
 
-# Register the provider
-provider_registry.register("togetherai", TogetherAIProvider)
+        Args:
+            form_data (Dict): The form data submitted by the user.
+            app_config (AppConfig): The shared configuration object.
+        """
+        log.debug("TogetherAIProvider updating configuration.")
+        engine = form_data.get("engine", "").lower()
+        if engine != "togetherai":
+            log.debug("TogetherAIProvider: Engine not set to 'togetherai'; skipping config update.")
+            return
+
+        # TogetherAI does not have a model in the ConfigForm, but can update image_size and image_steps
+        if form_data.get("image_size"):
+            app_config.IMAGE_SIZE.value = form_data["image_size"]
+            # app_config.IMAGE_SIZE.save()
+            log.debug(f"TogetherAIProvider: IMAGE_SIZE updated to {form_data['image_size']}")
+
+        if form_data.get("image_steps") is not None:
+            app_config.IMAGE_STEPS.value = form_data["image_steps"]
+            # app_config.IMAGE_STEPS.save()
+            log.debug(f"TogetherAIProvider: IMAGE_STEPS updated to {form_data['image_steps']}")

@@ -3,13 +3,11 @@
 import logging
 import httpx
 from typing import List, Dict, Optional
-from open_webui.config import IMAGES_OPENAI_API_BASE_URL, IMAGES_OPENAI_API_KEY
 
 from fastapi import HTTPException
 from .base import BaseImageProvider
 from .registry import provider_registry
-import base64
-import mimetypes
+from open_webui.config import AppConfig
 
 log = logging.getLogger(__name__)
 
@@ -25,8 +23,8 @@ class OpenAIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "IMAGES_OPENAI_API_BASE_URL", "value": IMAGES_OPENAI_API_BASE_URL.value or "", "required": False},
-            {"key": "IMAGES_OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value or "", "required": False},
+            {"key": "IMAGES_OPENAI_API_BASE_URL", "value": getattr(self.config, "IMAGES_OPENAI_API_BASE_URL", "").value or "", "required": False},
+            {"key": "IMAGES_OPENAI_API_KEY", "value": getattr(self.config, "IMAGES_OPENAI_API_KEY", "").value or "", "required": False},
         ]
 
         for config in config_items:
@@ -202,18 +200,42 @@ class OpenAIProvider(BaseImageProvider):
         return getattr(self, "current_model", "dall-e-2")
 
     def get_config(self) -> Dict[str, Optional[str]]:
+        try:
+            config = {
+                "OPENAI_API_BASE_URL": self.base_url,
+                "OPENAI_API_KEY": self.api_key,
+                "CURRENT_MODEL": self.current_model,
+            }
+            log.debug(f"OpenAIProvider configuration: {config}")
+            return config
+        except Exception as e:
+            log.error(f"Error retrieving OpenAIProvider config: {e}")
+            return {}
+
+    def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
         """
-        Retrieve OpenAI-specific configuration details.
+        Update the shared AppConfig based on form data for OpenAI provider.
 
-        Returns:
-            Dict[str, Optional[str]]: OpenAI configuration details.
+        Args:
+            form_data (Dict): The form data submitted by the user.
+            app_config (AppConfig): The shared configuration object.
         """
-        return {
-            "OPENAI_API_BASE_URL": self.base_url,
-            "OPENAI_API_KEY": self.api_key,
-            "CURRENT_MODEL": self.current_model,
-        }
+        log.debug("OpenAIProvider updating configuration.")
+        engine = form_data.get("engine", "").lower()
+        if engine != "openai":
+            log.debug("OpenAIProvider: Engine not set to 'openai'; skipping config update.")
+            return
 
+        if form_data.get("model"):
+            self.set_model(form_data["model"])
 
-# Register the provider
-provider_registry.register("openai", OpenAIProvider)
+        # Update other configurations if necessary
+        if form_data.get("image_size"):
+            app_config.IMAGE_SIZE.value = form_data["image_size"]
+            # app_config.IMAGE_SIZE.save()
+            log.debug(f"OpenAIProvider: IMAGE_SIZE updated to {form_data['image_size']}")
+
+        if form_data.get("image_steps") is not None:
+            app_config.IMAGE_STEPS.value = form_data["image_steps"]
+            # app_config.IMAGE_STEPS.save()
+            log.debug(f"OpenAIProvider: IMAGE_STEPS updated to {form_data['image_steps']}")

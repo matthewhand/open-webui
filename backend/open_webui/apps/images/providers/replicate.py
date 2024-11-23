@@ -7,6 +7,7 @@ from typing import List, Dict, Optional
 import httpx
 from .base import BaseImageProvider
 from .registry import provider_registry
+from open_webui.config import AppConfig
 
 log = logging.getLogger(__name__)
 
@@ -157,10 +158,31 @@ class ReplicateProvider(BaseImageProvider):
             Dict[str, Optional[str]]: Replicate configuration details.
         """
         return {
-            "REPLICATE_BASE_URL": getattr(self, 'base_url', None),
+            "REPLICATE_BASE_URL": self.base_url,
             "REPLICATE_API_KEY": self.api_key,
         }
 
+    def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
+        """
+        Update the shared AppConfig based on form data for Replicate provider.
 
-# Register the provider
-provider_registry.register("replicate", ReplicateProvider)
+        Args:
+            form_data (Dict): The form data submitted by the user.
+            app_config (AppConfig): The shared configuration object.
+        """
+        log.debug("ReplicateProvider updating configuration.")
+        engine = form_data.get("engine", "").lower()
+        if engine != "replicate":
+            log.debug("ReplicateProvider: Engine not set to 'replicate'; skipping config update.")
+            return
+
+        # Replicate may not have models to set via the provider, but can update image_size and image_steps
+        if form_data.get("image_size"):
+            app_config.IMAGE_SIZE.value = form_data["image_size"]
+            # app_config.IMAGE_SIZE.save()
+            log.debug(f"ReplicateProvider: IMAGE_SIZE updated to {form_data['image_size']}")
+
+        if form_data.get("image_steps") is not None:
+            app_config.IMAGE_STEPS.value = form_data["image_steps"]
+            # app_config.IMAGE_STEPS.save()
+            log.debug(f"ReplicateProvider: IMAGE_STEPS updated to {form_data['image_steps']}")

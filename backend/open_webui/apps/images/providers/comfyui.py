@@ -8,7 +8,7 @@ from typing import List, Dict, Optional
 
 import httpx
 import websocket
-from open_webui.config import COMFYUI_BASE_URL, COMFYUI_WORKFLOW, COMFYUI_WORKFLOW_NODES
+from open_webui.config import COMFYUI_BASE_URL, COMFYUI_WORKFLOW, COMFYUI_WORKFLOW_NODES, AppConfig
 from .base import BaseImageProvider
 from .registry import provider_registry
 
@@ -26,9 +26,9 @@ class ComfyUIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value or "", "required": False},
-            {"key": "COMFYUI_WORKFLOW", "value": COMFYUI_WORKFLOW.value or "{}", "required": False},
-            {"key": "COMFYUI_WORKFLOW_NODES", "value": COMFYUI_WORKFLOW_NODES.value or "[]", "required": False},
+            {"key": "COMFYUI_BASE_URL", "value": getattr(self.config, "COMFYUI_BASE_URL", "").value or "", "required": False},
+            {"key": "COMFYUI_WORKFLOW", "value": getattr(self.config, "COMFYUI_WORKFLOW", "").value or "{}", "required": False},
+            {"key": "COMFYUI_WORKFLOW_NODES", "value": getattr(self.config, "COMFYUI_WORKFLOW_NODES", "").value or "[]", "required": False},
         ]
 
         for config in config_items:
@@ -64,7 +64,6 @@ class ComfyUIProvider(BaseImageProvider):
             log.info(f"ComfyUIProvider available with base_url: {self.base_url}")
         else:
             log.debug("ComfyUIProvider: Required configuration is missing and provider is not available.")
-
 
     def validate_config(self) -> bool:
         """
@@ -339,7 +338,7 @@ class ComfyUIProvider(BaseImageProvider):
             "COMFYUI_WORKFLOW": self.workflow,
             "COMFYUI_WORKFLOW_NODES": self.workflow_nodes if self.workflow_nodes else [],
         }
-    
+
     def set_model(self, model: str):
         """
         Set the current image model for ComfyUI.
@@ -347,9 +346,6 @@ class ComfyUIProvider(BaseImageProvider):
         Args:
             model (str): The model name to set.
         """
-        # if not self.base_url:
-        #     raise Exception("ComfyUIProvider is not configured.")
-
         try:
             # Update the workflow to set the desired model
             workflow = self.workflow
@@ -416,7 +412,30 @@ class ComfyUIProvider(BaseImageProvider):
         except Exception as e:
             log.error(f"Failed to get model from ComfyUI workflow: {e}")
             return ""
-    
 
-# Register the provider
-provider_registry.register("comfyui", ComfyUIProvider)
+    def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
+        """
+        Update the shared AppConfig based on form data for ComfyUI provider.
+
+        Args:
+            form_data (Dict): The form data submitted by the user.
+            app_config (AppConfig): The shared configuration object.
+        """
+        log.debug("ComfyUIProvider updating configuration.")
+        engine = form_data.get("engine", "").lower()
+        if engine != "comfyui":
+            log.debug("ComfyUIProvider: Engine not set to 'comfyui'; skipping config update.")
+            return
+
+        if form_data.get("model"):
+            self.set_model(form_data["model"])
+
+        if form_data.get("image_size"):
+            app_config.IMAGE_SIZE.value = form_data["image_size"]
+            # app_config.IMAGE_SIZE.save()
+            log.debug(f"ComfyUIProvider: IMAGE_SIZE updated to {form_data['image_size']}")
+
+        if form_data.get("image_steps") is not None:
+            app_config.IMAGE_STEPS.value = form_data["image_steps"]
+            # app_config.IMAGE_STEPS.save()
+            log.debug(f"ComfyUIProvider: IMAGE_STEPS updated to {form_data['image_steps']}")

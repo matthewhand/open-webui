@@ -13,6 +13,7 @@ from open_webui.config import (
     AUTOMATIC1111_CFG_SCALE,
     AUTOMATIC1111_SAMPLER,
     AUTOMATIC1111_SCHEDULER,
+    AppConfig,
 )
 
 log = logging.getLogger(__name__)
@@ -31,11 +32,11 @@ class Automatic1111Provider(BaseImageProvider):
 
         log.debug("Executing Automatic1111Provider populate_config...")
         config_items = [
-            {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value or "", "required": False},
-            {"key": "AUTOMATIC1111_API_AUTH", "value": AUTOMATIC1111_API_AUTH.value or "", "required": False},
-            {"key": "AUTOMATIC1111_CFG_SCALE", "value": AUTOMATIC1111_CFG_SCALE.value or 7.5, "required": False},
-            {"key": "AUTOMATIC1111_SAMPLER", "value": AUTOMATIC1111_SAMPLER.value or "Euler", "required": False},
-            {"key": "AUTOMATIC1111_SCHEDULER", "value": AUTOMATIC1111_SCHEDULER.value or "normal", "required": False},
+            {"key": "AUTOMATIC1111_BASE_URL", "value": getattr(self.config, "AUTOMATIC1111_BASE_URL", "").value or "", "required": False},
+            {"key": "AUTOMATIC1111_API_AUTH", "value": getattr(self.config, "AUTOMATIC1111_API_AUTH", "").value or "", "required": False},
+            {"key": "AUTOMATIC1111_CFG_SCALE", "value": getattr(self.config, "AUTOMATIC1111_CFG_SCALE", "").value or 7.5, "required": False},
+            {"key": "AUTOMATIC1111_SAMPLER", "value": getattr(self.config, "AUTOMATIC1111_SAMPLER", "").value or "Euler", "required": False},
+            {"key": "AUTOMATIC1111_SCHEDULER", "value": getattr(self.config, "AUTOMATIC1111_SCHEDULER", "").value or "normal", "required": False},
         ]
 
         for config in config_items:
@@ -68,7 +69,6 @@ class Automatic1111Provider(BaseImageProvider):
             log.info(f"Automatic1111Provider available with base_url: {self.base_url}")
         else:
             log.debug("Automatic1111Provider: Required configuration is missing and provider is not available.")
-
 
     def validate_config(self) -> bool:
         """
@@ -204,7 +204,7 @@ class Automatic1111Provider(BaseImageProvider):
         try:
             with httpx.Client() as client:
                 response = client.get(
-                    f"{self.base_url}/sdapi/v1/status",
+                    url=f"{self.base_url}/sdapi/v1/status",
                     headers=headers,
                     timeout=10.0,
                 )
@@ -225,9 +225,6 @@ class Automatic1111Provider(BaseImageProvider):
         Raises:
             Exception: If setting the model fails.
         """
-        # if not self.base_url:
-        #     raise Exception("Automatic1111Provider is not configured.")
-
         try:
             headers = {}
             if self.api_key:
@@ -268,7 +265,7 @@ class Automatic1111Provider(BaseImageProvider):
         Get the current model from AUTOMATIC1111.
 
         Returns:
-            str: The current model name.
+            str: Currently selected model.
         """
         if not self.base_url:
             raise Exception("Automatic1111Provider is not configured.")
@@ -308,6 +305,29 @@ class Automatic1111Provider(BaseImageProvider):
             "AUTOMATIC1111_SCHEDULER": self.scheduler,
         }
 
+    def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
+        """
+        Update the shared AppConfig based on form data for AUTOMATIC1111 provider.
 
-# Register the provider
-provider_registry.register("automatic1111", Automatic1111Provider)
+        Args:
+            form_data (Dict): The form data submitted by the user.
+            app_config (AppConfig): The shared configuration object.
+        """
+        log.debug("Automatic1111Provider updating configuration.")
+        engine = form_data.get("engine", "").lower()
+        if engine != "automatic1111":
+            log.debug("Automatic1111Provider: Engine not set to 'automatic1111'; skipping config update.")
+            return
+
+        if form_data.get("model"):
+            self.set_model(form_data["model"])
+
+        if form_data.get("image_size"):
+            app_config.IMAGE_SIZE.value = form_data["image_size"]
+            # app_config.IMAGE_SIZE.save()
+            log.debug(f"Automatic1111Provider: IMAGE_SIZE updated to {form_data['image_size']}")
+
+        if form_data.get("image_steps") is not None:
+            app_config.IMAGE_STEPS.value = form_data["image_steps"]
+            # app_config.IMAGE_STEPS.save()
+            log.debug(f"Automatic1111Provider: IMAGE_STEPS updated to {form_data['image_steps']}")
