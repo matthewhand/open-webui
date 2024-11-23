@@ -100,7 +100,6 @@ class ComfyUIProvider(BaseImageProvider):
             log.exception(f"ComfyUIProvider Error during image generation: {e}")
             raise Exception(f"ComfyUIProvider Error: {e}")
 
-
     async def list_models(self) -> List[Dict[str, str]]:
         """
         List available models from ComfyUI's API.
@@ -108,7 +107,7 @@ class ComfyUIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of available models.
         """
-        if not hasattr(self, 'base_url'):
+        if not self.base_url:
             log.error("ComfyUIProvider is not configured properly.")
             return []
 
@@ -157,7 +156,7 @@ class ComfyUIProvider(BaseImageProvider):
         """
         Verify the connectivity of ComfyUI's API endpoint.
         """
-        if not hasattr(self, 'base_url'):
+        if not self.base_url:
             log.error("ComfyUIProvider is not configured properly.")
             raise Exception("ComfyUIProvider is not configured.")
 
@@ -310,7 +309,89 @@ class ComfyUIProvider(BaseImageProvider):
             "COMFYUI_BASE_URL": self.base_url,
             "COMFYUI_WORKFLOW": self.workflow,
             "COMFYUI_WORKFLOW_NODES": self.workflow_nodes if self.workflow_nodes else [],
+            "CURRENT_MODEL": self.get_model(),
         }
+
+    def set_model(self, model: str):
+        """
+        Set the current image model for ComfyUI.
+
+        Args:
+            model (str): The model name to set.
+        """
+        if not self.base_url:
+            raise Exception("ComfyUIProvider is not configured.")
+
+        try:
+            # Update the workflow to set the desired model
+            workflow = json.loads(self.workflow)
+            for node in self.workflow_nodes:
+                node_id = node.get("node_ids", [None])[0]
+                node_type = node.get("type")
+                if node_type == "model" and node_id:
+                    # Assuming the model node has an input field that specifies the model
+                    # The exact key depends on the workflow's structure
+                    # Here, we assume it's 'model' or similar
+                    if "model" in workflow[node_id]["inputs"]:
+                        workflow[node_id]["inputs"]["model"] = model
+                    elif "ckpt_name" in workflow[node_id]["inputs"]:
+                        workflow[node_id]["inputs"]["ckpt_name"] = model
+                    else:
+                        log.warning(f"Unknown input key for model node '{node_id}'.")
+                        continue
+                    log.info(f"Model set to '{model}' in node '{node_id}'.")
+                    break
+            else:
+                log.warning("No model node found in the workflow to set the model.")
+                raise Exception("No model node found in the workflow to set the model.")
+
+            # Update the internal workflow
+            self.workflow = json.dumps(workflow, indent=2)
+
+            # Optionally, save the updated workflow to the configuration if needed
+            # If self.config has a COMFYUI_WORKFLOW and COMFYUI_WORKFLOW_NODES, update them
+            if hasattr(self, 'config'):
+                self.config.COMFYUI_WORKFLOW.value = self.workflow
+                self.config.COMFYUI_WORKFLOW.save()
+
+            log.info(f"ComfyUIProvider model set to '{model}' successfully.")
+        except Exception as e:
+            log.error(f"Failed to set model '{model}' in ComfyUIProvider: {e}")
+            raise Exception(f"Failed to set model '{model}' in ComfyUIProvider: {e}")
+
+    def get_model(self) -> str:
+        """
+        Get the current image model from ComfyUI's workflow.
+
+        Returns:
+            str: Currently selected model.
+        """
+        try:
+            workflow = json.loads(self.workflow)
+            model_node_id = self._get_model_node_id()
+            if not model_node_id:
+                log.warning("No model node found in the workflow.")
+                return ""
+            inputs = workflow.get(model_node_id, {}).get("inputs", {})
+            # The key to get the model may vary; adjust based on actual workflow
+            model = inputs.get("model") or inputs.get("ckpt_name") or ""
+            log.info(f"Current ComfyUI model: '{model}'")
+            return model
+        except Exception as e:
+            log.error(f"Failed to get model from ComfyUI workflow: {e}")
+            return ""
+
+    # Ensure to handle headers correctly
+    @property
+    def headers(self) -> Dict[str, str]:
+        """
+        Get headers for HTTP requests.
+
+        Returns:
+            Dict[str, str]: Headers dictionary.
+        """
+        return {}  # Add any necessary headers here, e.g., authentication if needed
+
 
 # Register the provider
 provider_registry.register("comfyui", ComfyUIProvider)

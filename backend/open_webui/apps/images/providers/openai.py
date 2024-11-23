@@ -37,7 +37,7 @@ class OpenAIProvider(BaseImageProvider):
                 elif key == "IMAGES_OPENAI_API_KEY":
                     self.api_key = value
             elif required:
-                log.debug(f"OpenAIProvider: Missing required configuration '{key}'.")
+                log.warning(f"OpenAIProvider: Missing required configuration '{key}'.")
 
         # Ensure all required attributes are set
         self.base_url = getattr(self, "base_url", "")
@@ -68,7 +68,7 @@ class OpenAIProvider(BaseImageProvider):
             raise Exception("OpenAIProvider is not configured.")
 
         payload = {
-            "model": "dall-e-2",  # Default model
+            "model": self.current_model or "dall-e-2",  # Default model if not set
             "prompt": prompt,
             "n": n,
             "size": size,
@@ -76,7 +76,7 @@ class OpenAIProvider(BaseImageProvider):
         }
 
         if negative_prompt:
-            payload["negative_prompt"] = negative_prompt  # Ensure API supports this
+            payload["negative_prompt"] = negative_prompt  # OpenAI may support this in the future
 
         log.debug(f"OpenAIProvider Payload: {payload}")
 
@@ -84,7 +84,7 @@ class OpenAIProvider(BaseImageProvider):
             async with httpx.AsyncClient() as client:
                 response = await client.post(
                     url=f"{self.base_url}/images/generations",
-                    headers=self.headers,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
                     json=payload,
                     timeout=120.0,
                 )
@@ -116,7 +116,6 @@ class OpenAIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of available models.
         """
-        # OpenAI's image generation currently only supports DALL·E models
         return [
             {"id": "dall-e-2", "name": "DALL·E 2"},
             {"id": "dall-e-3", "name": "DALL·E 3"},
@@ -132,11 +131,9 @@ class OpenAIProvider(BaseImageProvider):
 
         try:
             async with httpx.AsyncClient() as client:
-                # OpenAI doesn't have a specific status endpoint for image generation.
-                # We'll perform a simple request to list models as a connectivity check.
                 response = await client.get(
                     url=f"{self.base_url}/models",
-                    headers=self.headers,
+                    headers={"Authorization": f"Bearer {self.api_key}"},
                     timeout=10.0,
                 )
             response.raise_for_status()
@@ -145,6 +142,27 @@ class OpenAIProvider(BaseImageProvider):
         except Exception as e:
             log.error(f"Failed to verify OpenAI API: {e}")
             raise Exception(f"Failed to verify OpenAI API: {e}")
+
+    def set_model(self, model: str):
+        """
+        Set the current image model for OpenAI's DALL·E API.
+
+        Args:
+            model (str): Model ID (e.g., 'dall-e-2' or 'dall-e-3').
+        """
+        if model not in ["dall-e-2", "dall-e-3"]:
+            raise ValueError(f"Model '{model}' is not supported by OpenAIProvider.")
+        self.current_model = model
+        log.info(f"OpenAIProvider model set to: {self.current_model}")
+
+    def get_model(self) -> str:
+        """
+        Get the current image model for OpenAI's DALL·E API.
+
+        Returns:
+            str: Currently selected model.
+        """
+        return getattr(self, "current_model", "dall-e-2")
 
     def get_config(self) -> Dict[str, str]:
         """
@@ -156,6 +174,7 @@ class OpenAIProvider(BaseImageProvider):
         return {
             "OPENAI_API_BASE_URL": self.base_url,
             "OPENAI_API_KEY": self.api_key,
+            "CURRENT_MODEL": self.get_model(),
         }
 
 
