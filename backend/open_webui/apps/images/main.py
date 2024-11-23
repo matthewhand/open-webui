@@ -1,6 +1,5 @@
 # backend/open_webui/apps/images/main.py
 
-import logging
 from typing import Dict, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -26,15 +25,18 @@ from .providers.base import BaseImageProvider
 
 import re  # For regex in update_image_config
 
-# Initialize root logger with DEBUG level
+import logging
+
+# Set up logging
 logging.basicConfig(
-    level=logging.DEBUG,  # Set root logger to DEBUG
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.DEBUG,
+    format="%(levelname)s %(asctime)s %(name)s - %(message)s",
 )
 
-# Initialize module-specific logger
 log = logging.getLogger(__name__)
-log.setLevel(SRC_LOG_LEVELS.get("IMAGES", logging.DEBUG))  # Ensure logger is set to DEBUG
+
+# Include this in your main script to ensure proper logging
+log.debug("Image aplication starting...")
 
 # FastAPI setup
 app = FastAPI(
@@ -54,12 +56,12 @@ app.add_middleware(
 
 # Pydantic models for configuration updates and image generation
 class ConfigForm(BaseModel):
-    enabled: bool
-    engine: str = "openai"
+    enabled: Optional[bool] = ENABLE_IMAGE_GENERATION.value
+    engine: Optional[str] = None
     model: Optional[str] = None
     image_size: Optional[str] = None
     image_steps: Optional[int] = None
-    # Provider-specific configuration fields are removed from here
+    # Provider-specific configuration fields are populated by the provider code
 
 
 class ImageConfigForm(BaseModel):
@@ -111,13 +113,15 @@ for provider_name in provider_registry.list_providers():
         # Instantiate provider with shared configuration
         provider_instance = provider_class(config=app.state.config)
 
-        # Validate the provider configuration
-        if not provider_instance.validate_config():
-            log.warning(f"Provider '{provider_name}' configuration validation failed.")
-            continue
+        # # Validate the provider configuration
+        # if not provider_instance.validate_config():
+        #     log.warning(f"Provider '{provider_name}' configuration validation failed.")
+        #     # No need to raise an exception here; validation happens on save.
+        # else:
+        #     log.info(f"Provider '{provider_name}' configuration validated.")
 
         PROVIDERS[provider_key] = provider_instance
-        log.info(f"Provider '{provider_name}' loaded successfully.")
+        
     except Exception as e:
         log.error(f"Failed to load provider '{provider_name}': {e}", exc_info=True)
 
@@ -137,34 +141,33 @@ def validation_exception_handler(request: Request, exc: RequestValidationError):
         },
     )
 
-# Middleware for request logging
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    log.debug(f"Incoming request: {request.method} {request.url}")
-    try:
-        body = await request.body()
-        if body:
-            log.debug(f"Request body: {body.decode('utf-8')}")
-        else:
-            log.debug("Request body is empty.")
-    except Exception as e:
-        log.debug(f"Failed to read request body: {e}")
+# # Middleware for request logging
+# @app.middleware("http")
+# async def log_requests(request: Request, call_next):
+#     log.debug(f"Incoming request: {request.method} {request.url}")
+#     try:
+#         body = await request.body()
+#         if body:
+#             log.debug(f"Request body: {body.decode('utf-8')}")
+#         else:
+#             log.debug("Request body is empty.")
+#     except Exception as e:
+#         log.debug(f"Failed to read request body: {e}")
 
-    # Await the response
-    response = await call_next(request)
+#     # Await the response
+#     response = await call_next(request)
  
-    log.debug(f"Response status: {response.status_code}")
-    return response
+#     log.debug(f"Response status: {response.status_code}")
+#     return response
 
 # Routes
 
 @app.get("/config")
 def get_config(user=Depends(get_admin_user)):
     """
-    Retrieve current configuration, dynamically flattening provider-specific details.
+    Retrieve current configuration without validating providers.
     """
     log.debug("Retrieving current configuration.")
-    # General configuration
     general_config = {
         "enabled": ENABLE_IMAGE_GENERATION.value,
         "engine": IMAGE_GENERATION_ENGINE.value,
@@ -176,7 +179,6 @@ def get_config(user=Depends(get_admin_user)):
         for provider_name, provider_instance in PROVIDERS.items()
     }
 
-    # Combine general and provider configurations into a single top-level structure
     combined_config = {**general_config, **flattened_providers}
     log.debug(f"Combined configuration: {combined_config}")
     return combined_config
@@ -196,15 +198,20 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
         # Update IMAGE_GENERATION_ENGINE if provided
         if form_data.engine:
             new_engine = form_data.engine.lower()
+
             IMAGE_GENERATION_ENGINE.value = new_engine
+            log.debug(f"Setting IMAGE_GENERATION_ENGINE to {new_engine}")
             IMAGE_GENERATION_ENGINE.save()
             log.debug(f"Set IMAGE_GENERATION_ENGINE to {new_engine}")
 
-            # Check if the new engine is available
-            active_provider: Optional[BaseImageProvider] = PROVIDERS.get(new_engine)
-            if not active_provider:
-                log.error(f"Engine '{new_engine}' is not properly configured.")
-                raise HTTPException(status_code=400, detail=f"Engine '{new_engine}' is not properly configured.")
+            ## Validate only the newly selected engine
+            #active_provider: Optional[BaseImageProvider] = PROVIDERS.get(new_engine)
+            # if active_provider and not active_provider.validate_config():
+            #     log.error(f"Engine '{new_engine}' is not properly configured.")
+            #     raise HTTPException(
+            #         status_code=400,
+            #         detail=f"Engine '{new_engine}' is not properly configured."
+            #     )
 
         # Update IMAGE_GENERATION_MODEL if provided
         if form_data.model:
@@ -234,7 +241,6 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
 
     log.debug("Configuration update completed successfully.")
     return {"message": "Configuration updated successfully."}
-
 
 @app.post("/image/config/update")
 def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)):
@@ -321,7 +327,10 @@ def verify_url(user=Depends(get_admin_user)):
 
 @app.get("/models")
 def get_available_models(user=Depends(get_verified_user)):
-    """Retrieve models available in the selected engine."""
+    """
+    Retrieve models available in the selected engine.
+    No validation performed here; assumes engine is already configured.
+    """
     engine = IMAGE_GENERATION_ENGINE.value.lower()
     provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
 
@@ -330,11 +339,6 @@ def get_available_models(user=Depends(get_verified_user)):
     if not provider:
         log.error(f"Engine '{engine}' not supported.")
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not supported.")
-
-    # Check if provider is configured
-    if not hasattr(provider, 'base_url') or (hasattr(provider, 'api_key') and not provider.api_key):
-        log.error(f"Engine '{engine}' is not properly configured.")
-        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
 
     try:
         models = provider.list_models()

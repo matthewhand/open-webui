@@ -31,7 +31,7 @@ class Automatic1111Provider(BaseImageProvider):
 
         log.debug("Executing Automatic1111Provider populate_config...")
         config_items = [
-            {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value or "", "required": True},
+            {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value or "", "required": False},
             {"key": "AUTOMATIC1111_API_AUTH", "value": AUTOMATIC1111_API_AUTH.value or "", "required": False},
             {"key": "AUTOMATIC1111_CFG_SCALE", "value": AUTOMATIC1111_CFG_SCALE.value or 7.5, "required": False},
             {"key": "AUTOMATIC1111_SAMPLER", "value": AUTOMATIC1111_SAMPLER.value or "Euler", "required": False},
@@ -76,7 +76,7 @@ class Automatic1111Provider(BaseImageProvider):
         Returns True if valid, False otherwise.
         """
         if not self.base_url:
-            log.error("Automatic1111Provider: 'AUTOMATIC1111_BASE_URL' is missing.")
+            log.warning("Automatic1111Provider: 'AUTOMATIC1111_BASE_URL' is missing.")
             return False
         # Assuming API key is optional for some setups
         # If required, uncomment the following lines:
@@ -225,8 +225,8 @@ class Automatic1111Provider(BaseImageProvider):
         Raises:
             Exception: If setting the model fails.
         """
-        if not self.base_url:
-            raise Exception("Automatic1111Provider is not configured.")
+        # if not self.base_url:
+        #     raise Exception("Automatic1111Provider is not configured.")
 
         try:
             headers = {}

@@ -26,7 +26,7 @@ class ComfyUIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value or "", "required": True},
+            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value or "", "required": False},
             {"key": "COMFYUI_WORKFLOW", "value": COMFYUI_WORKFLOW.value or "{}", "required": False},
             {"key": "COMFYUI_WORKFLOW_NODES", "value": COMFYUI_WORKFLOW_NODES.value or "[]", "required": False},
         ]
@@ -72,7 +72,7 @@ class ComfyUIProvider(BaseImageProvider):
         Returns True if valid, False otherwise.
         """
         if not self.base_url:
-            log.error("ComfyUIProvider: 'COMFYUI_BASE_URL' is missing.")
+            log.warning("ComfyUIProvider: 'COMFYUI_BASE_URL' is missing.")
             return False
         return True
 
@@ -336,11 +336,10 @@ class ComfyUIProvider(BaseImageProvider):
         """
         return {
             "COMFYUI_BASE_URL": self.base_url,
-            "COMFYUI_WORKFLOW": json.dumps(self.workflow),
-            "COMFYUI_WORKFLOW_NODES": json.dumps(self.workflow_nodes),
-            "CURRENT_MODEL": self.get_model(),
+            "COMFYUI_WORKFLOW": self.workflow,
+            "COMFYUI_WORKFLOW_NODES": self.workflow_nodes if self.workflow_nodes else [],
         }
-
+    
     def set_model(self, model: str):
         """
         Set the current image model for ComfyUI.
@@ -348,8 +347,8 @@ class ComfyUIProvider(BaseImageProvider):
         Args:
             model (str): The model name to set.
         """
-        if not self.base_url:
-            raise Exception("ComfyUIProvider is not configured.")
+        # if not self.base_url:
+        #     raise Exception("ComfyUIProvider is not configured.")
 
         try:
             # Update the workflow to set the desired model

@@ -25,8 +25,8 @@ class OpenAIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "IMAGES_OPENAI_API_BASE_URL", "value": IMAGES_OPENAI_API_BASE_URL.value or "", "required": True},
-            {"key": "IMAGES_OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value or "", "required": True},
+            {"key": "IMAGES_OPENAI_API_BASE_URL", "value": IMAGES_OPENAI_API_BASE_URL.value or "", "required": False},
+            {"key": "IMAGES_OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value or "", "required": False},
         ]
 
         for config in config_items:
@@ -46,6 +46,9 @@ class OpenAIProvider(BaseImageProvider):
         self.base_url = getattr(self, "base_url", "")
         self.api_key = getattr(self, "api_key", "")
 
+        # Initialize the default model if not already set
+        self.current_model = getattr(self, "current_model", "dall-e-3")
+
         if self.base_url and self.api_key:
             log.info(f"OpenAIProvider available with base_url: {self.base_url}")
         else:
@@ -57,10 +60,10 @@ class OpenAIProvider(BaseImageProvider):
         Returns True if valid, False otherwise.
         """
         if not self.base_url:
-            log.error("OpenAIProvider: 'IMAGES_OPENAI_API_BASE_URL' is missing.")
+            log.warning("OpenAIProvider: 'IMAGES_OPENAI_API_BASE_URL' is missing.")
             return False
         if not self.api_key:
-            log.error("OpenAIProvider: 'IMAGES_OPENAI_API_KEY' is missing.")
+            log.warning("OpenAIProvider: 'IMAGES_OPENAI_API_KEY' is missing.")
             return False
         return True
 
