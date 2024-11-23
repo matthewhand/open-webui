@@ -49,10 +49,11 @@ class ProviderRegistry:
         """
         provider = cls._providers.get(name.lower())
         if not provider:
-            log.warning(f"Provider '{provider_name}' not found in registry.")
+            log.warning(f"Provider '{name}' not found in registry.")
         else:
-            log.debug(f"Retrieved provider '{provider_name}': {provider}")
+            log.debug(f"Retrieved provider '{name}': {provider}")
         return provider
+
 
 
     @classmethod

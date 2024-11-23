@@ -1,5 +1,3 @@
-# backend/open_webui/apps/images/main.py
-
 import logging
 from typing import Dict, Optional, List
 
@@ -30,9 +28,6 @@ from pathlib import Path
 import os
 import re
 
-# log = logging.getLogger(__name__)
-# log.setLevel(SRC_LOG_LEVELS["IMAGES"])
-
 # Initialize logger
 logging.basicConfig(
     level=logging.DEBUG,  # Capture all debug logs
@@ -60,8 +55,8 @@ app.add_middleware(
 
 # Pydantic models for configuration updates and image generation
 class ConfigForm(BaseModel):
-    enabled: Optional[bool] = Field(default=None)
-    engine: Optional[str] = Field(default=None)
+    enabled: bool
+    engine: str
     # Provider-specific configurations are allowed as extra fields
     class Config:
         extra = "allow"
@@ -77,15 +72,36 @@ class GenerateImageForm(BaseModel):
     size: Optional[str] = None
     negative_prompt: Optional[str] = None
 
+# Utility function to fetch and sanitize provider configurations
+def get_populated_configs(providers: Dict[str, BaseImageProvider]) -> Dict[str, Dict[str, str]]:
+    """
+    Dynamically fetch all configurations from providers,
+    substituting missing or None values with empty strings.
+    
+    Args:
+        providers (Dict[str, BaseImageProvider]): A dictionary of provider instances.
+    
+    Returns:
+        Dict[str, Dict[str, str]]: A dictionary containing sanitized configurations for each provider.
+    """
+    populated_config = {}
+    for provider_key, provider_instance in providers.items():
+        provider_config = provider_instance.get_config()
+        # Substitute None with ""
+        clean_config = {k: (v if v is not None else "") for k, v in provider_config.items()}
+        populated_config[provider_key] = clean_config
+    return populated_config
+
 # Initialize shared configuration
 app.state.config = AppConfig()
 
 app.state.config.ENGINE = IMAGE_GENERATION_ENGINE
 app.state.config.ENABLED = ENABLE_IMAGE_GENERATION
 
+app.state.config.MODEL = IMAGE_GENERATION_MODEL
+
 app.state.config.IMAGE_SIZE = IMAGE_SIZE
 app.state.config.IMAGE_STEPS = IMAGE_STEPS
-
 
 # Dynamically instantiate providers from the registry
 PROVIDERS: Dict[str, BaseImageProvider] = {}
@@ -176,15 +192,12 @@ def get_config(user=Depends(get_admin_user)):
     """
     log.debug("Retrieving current configuration.")
     general_config = {
-        "enabled": app.state.config.ENABLE_IMAGE_GENERATION.value,
-        "engine": app.state.config.IMAGE_GENERATION_ENGINE.value,
+        "enabled": getattr(app.state.config.ENABLED, "value", False),
+        "engine": getattr(app.state.config.ENGINE, "value", ""),
     }
 
-    # Flatten provider-specific configurations
-    provider_configs = {
-        provider_key: provider_instance.get_config()
-        for provider_key, provider_instance in PROVIDERS.items()
-    }
+    # Dynamically fetch and sanitize provider configurations
+    provider_configs = get_populated_configs(PROVIDERS)
 
     # Combine general and provider-specific configurations into a single top-level structure
     combined_config = {**general_config, **provider_configs}
@@ -200,20 +213,25 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
 
         data = form_data.dict()
 
-        # Update ENABLE_IMAGE_GENERATION
+        # Update ENABLED
         if "enabled" in data and data["enabled"] is not None:
-            app.state.config.ENABLE_IMAGE_GENERATION.value = data["enabled"]
-            app.state.config.ENABLE_IMAGE_GENERATION.save()
-            log.debug(f"Set ENABLE_IMAGE_GENERATION to {data['enabled']}")
+            if hasattr(app.state.config.ENABLED, "value"):
+                app.state.config.ENABLED.value = data["enabled"]
+            else:
+                app.state.config.ENABLED = data["enabled"]
+            # app.state.config.ENABLED.save()  # Uncomment if save is needed
+            log.debug(f"Set ENABLED to {data['enabled']}")
 
-        # Update IMAGE_GENERATION_ENGINE if provided
+        # Update ENGINE if provided
         if "engine" in data and data["engine"]:
             new_engine = data["engine"].lower()
 
-            app.state.config.IMAGE_GENERATION_ENGINE.value = new_engine
-            app.state.config.IMAGE_GENERATION_ENGINE.save()
-            log.debug(f"Setting IMAGE_GENERATION_ENGINE to {new_engine}")
-            log.debug(f"Set IMAGE_GENERATION_ENGINE to {new_engine}")
+            if hasattr(app.state.config.ENGINE, "value"):
+                app.state.config.ENGINE.value = new_engine
+            else:
+                app.state.config.ENGINE = new_engine
+            # app.state.config.ENGINE.save()  # Uncomment if save is needed
+            log.debug(f"Set ENGINE to {new_engine}")
 
             # Verify that the new engine is enabled
             if IMAGE_ENABLED_PROVIDERS_LIST and new_engine not in IMAGE_ENABLED_PROVIDERS_LIST:
@@ -242,15 +260,18 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
 
         # Update general configurations
         if "model" in data and data["model"]:
-            log.debug(f"Setting IMAGE_GENERATION_MODEL to {data['model']}")
+            log.debug(f"Setting MODEL to {data['model']}")
             set_image_model(data["model"])
 
         if "image_size" in data and data["image_size"]:
             size_pattern = r"^\d+x\d+$"
             if re.match(size_pattern, data["image_size"]):
-                app.state.config.IMAGE_SIZE.value = data["image_size"]
-                app.state.config.IMAGE_SIZE.save()
-                log.debug(f"Setting IMAGE_SIZE to {data['image_size']}")
+                if hasattr(app.state.config.IMAGE_SIZE, "value"):
+                    app.state.config.IMAGE_SIZE.value = data["image_size"]
+                else:
+                    app.state.config.IMAGE_SIZE = data["image_size"]
+                # app.state.config.IMAGE_SIZE.save()  # Uncomment if save is needed
+                log.debug(f"Set IMAGE_SIZE to {data['image_size']}")
             else:
                 log.error("Invalid IMAGE_SIZE format received.")
                 raise HTTPException(
@@ -260,9 +281,12 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
 
         if "image_steps" in data and data["image_steps"] is not None:
             if isinstance(data["image_steps"], int) and data["image_steps"] >= 0:
-                app.state.config.IMAGE_STEPS.value = data["image_steps"]
-                app.state.config.IMAGE_STEPS.save()
-                log.debug(f"Setting IMAGE_STEPS to {data['image_steps']}")
+                if hasattr(app.state.config.IMAGE_STEPS, "value"):
+                    app.state.config.IMAGE_STEPS.value = data["image_steps"]
+                else:
+                    app.state.config.IMAGE_STEPS = data["image_steps"]
+                # app.state.config.IMAGE_STEPS.save()  # Uncomment if save is needed
+                log.debug(f"Set IMAGE_STEPS to {data['image_steps']}")
             else:
                 log.error("Invalid IMAGE_STEPS value received.")
                 raise HTTPException(
@@ -287,7 +311,7 @@ def verify_url(user=Depends(get_admin_user)):
     """
     Verify the connectivity of the configured engine's endpoint.
     """
-    engine = app.state.config.IMAGE_GENERATION_ENGINE.value.lower()
+    engine = getattr(app.state.config, "ENGINE", "").lower()
     provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
 
     log.debug(f"Verifying URL for engine '{engine}'")
@@ -313,9 +337,8 @@ def verify_url(user=Depends(get_admin_user)):
 def get_available_models(user=Depends(get_verified_user)):
     """
     Retrieve models available in the selected engine.
-    No validation performed here; assumes engine is already configured.
     """
-    engine = app.state.config.IMAGE_GENERATION_ENGINE.value.lower()
+    engine = getattr(app.state.config, "ENGINE", "").lower()
     provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
 
     log.debug(f"Fetching available models for engine '{engine}'")
@@ -326,13 +349,13 @@ def get_available_models(user=Depends(get_verified_user)):
 
     # Check if provider is configured
     if not provider.is_configured():
-        log.error(f"Engine '{engine}' is not properly configured.")
-        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
+        log.warning(f"Engine '{engine}' is not properly configured.")
+        return {"status": "warning", "message": f"Engine '{engine}' is not properly configured."}
 
     try:
         models = provider.list_models()
         log.debug(f"Available models for engine '{engine}': {models}")
-        return {"models": models}
+        return {"status": "ok", "models": models}
     except Exception as e:
         log.exception(f"Failed to retrieve models for engine '{engine}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -342,7 +365,7 @@ def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user
     """
     Generate images using the selected engine.
     """
-    engine = app.state.config.IMAGE_GENERATION_ENGINE.value.lower()
+    engine = getattr(app.state.config, "ENGINE", "").lower()
     provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
 
     log.debug(f"Generating images using engine '{engine}' with data: {form_data.dict()}")
@@ -356,7 +379,7 @@ def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user
         log.error(f"Engine '{engine}' is not properly configured.")
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
 
-    size = form_data.size or app.state.config.IMAGE_SIZE.value
+    size = form_data.size or getattr(app.state.config, "IMAGE_SIZE", "")
     log.debug(f"Using image size: '{size}'")
 
     try:
@@ -376,17 +399,36 @@ def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user
 def get_image_config(user=Depends(get_admin_user)):
     """Retrieve image-specific configuration."""
     log.debug("Retrieving image-specific configuration.")
-    return {
-        "MODEL": app.state.config.IMAGE_GENERATION_MODEL.value,
-        "IMAGE_SIZE": app.state.config.IMAGE_SIZE.value,
-        "IMAGE_STEPS": app.state.config.IMAGE_STEPS.value,
-    }
+    try:
+        model = getattr(app.state.config, "MODEL", "")
+        image_size = getattr(app.state.config, "IMAGE_SIZE", "")
+        image_steps = getattr(app.state.config, "IMAGE_STEPS", "")
+
+        # If these are configuration objects, access their .value attributes
+        if hasattr(model, "value"):
+            model = model.value
+        if hasattr(image_size, "value"):
+            image_size = image_size.value
+        if hasattr(image_steps, "value"):
+            image_steps = image_steps.value
+
+        image_config = {
+            "MODEL": model if model else "",
+            "IMAGE_SIZE": image_size if image_size else "",
+            "IMAGE_STEPS": image_steps if image_steps else "",
+        }
+
+        log.debug(f"Image-specific configuration: {image_config}")
+        return {"status": "ok", "config": image_config}
+    except Exception as e:
+        log.error(f"Error retrieving image configuration: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve image configuration.")
 
 def set_image_model(model: str):
     """
     Set the current image model for the selected engine.
     """
-    engine = app.state.config.IMAGE_GENERATION_ENGINE.value.lower()
+    engine = getattr(app.state.config, "ENGINE", "").lower()
     provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
 
     log.debug(f"Setting image model to '{model}' for engine '{engine}'")
@@ -407,16 +449,19 @@ def set_image_model(model: str):
         log.warning(f"Provider '{engine}' does not implement set_model method.")
         raise ValueError(f"Provider '{engine}' does not support model updates.")
 
-    # Update the configuration
-    app.state.config.IMAGE_GENERATION_MODEL.value = model
-    app.state.config.IMAGE_GENERATION_MODEL.save()
-    log.debug(f"IMAGE_GENERATION_MODEL updated to '{model}'")
+    # Update the configuration directly using .value
+    if hasattr(app.state.config.MODEL, "value"):
+        app.state.config.MODEL.value = model
+    else:
+        app.state.config.MODEL = model
+    # app.state.config.MODEL.save()  # Uncomment if save is needed
+    log.debug(f"Set MODEL to '{model}'")
 
 def get_image_model():
     """
     Get the current image model for the selected engine.
     """
-    engine = app.state.config.IMAGE_GENERATION_ENGINE.value.lower()
+    engine = getattr(app.state.config, "ENGINE", "").lower()
     provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
 
     log.debug(f"Retrieving current image model for engine '{engine}'")
@@ -436,4 +481,7 @@ def get_image_model():
             raise ValueError(f"Failed to get model for engine '{engine}': {e}")
     else:
         log.warning(f"Provider '{engine}' does not implement get_model method.")
-        return app.state.config.IMAGE_GENERATION_MODEL.value
+        model = getattr(app.state.config, "MODEL", "")
+        if hasattr(model, "value"):
+            return model.value
+        return model

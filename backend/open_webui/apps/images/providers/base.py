@@ -201,6 +201,13 @@ class BaseImageProvider(ABC):
         pass
 
     @abstractmethod
+    def is_configured(self) -> bool:
+        """
+        Determine if the provider is properly configured.
+        """
+        pass
+
+    @abstractmethod
     def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
         """
         Abstract method to update the shared AppConfig based on form data.

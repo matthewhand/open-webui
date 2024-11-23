@@ -7,7 +7,7 @@ from typing import List, Dict, Optional
 from fastapi import HTTPException
 from .base import BaseImageProvider
 from .registry import provider_registry
-from open_webui.config import AppConfig
+from open_webui.config import AppConfig, IMAGES_OPENAI_API_BASE_URL, IMAGES_OPENAI_API_KEY
 
 log = logging.getLogger(__name__)
 
@@ -23,8 +23,8 @@ class OpenAIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "IMAGES_OPENAI_API_BASE_URL", "value": getattr(self.config, "IMAGES_OPENAI_API_BASE_URL", "").value or "", "required": False},
-            {"key": "IMAGES_OPENAI_API_KEY", "value": getattr(self.config, "IMAGES_OPENAI_API_KEY", "").value or "", "required": False},
+            {"key": "OPENAI_API_BASE_URL", "value": IMAGES_OPENAI_API_BASE_URL.value or "", "required": True},
+            {"key": "OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value or "", "required": True},
         ]
 
         for config in config_items:
@@ -211,6 +211,12 @@ class OpenAIProvider(BaseImageProvider):
         except Exception as e:
             log.error(f"Error retrieving OpenAIProvider config: {e}")
             return {}
+
+    def is_configured(self) -> bool:
+        """
+        Check if OpenAIProvider is properly configured.
+        """
+        return bool(getattr(self, 'base_url', "")) and bool(getattr(self, 'api_key', ""))
 
     def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
         """

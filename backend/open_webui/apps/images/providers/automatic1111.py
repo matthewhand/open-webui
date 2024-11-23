@@ -32,11 +32,11 @@ class Automatic1111Provider(BaseImageProvider):
 
         log.debug("Executing Automatic1111Provider populate_config...")
         config_items = [
-            {"key": "AUTOMATIC1111_BASE_URL", "value": getattr(self.config, "AUTOMATIC1111_BASE_URL", "").value or "", "required": False},
-            {"key": "AUTOMATIC1111_API_AUTH", "value": getattr(self.config, "AUTOMATIC1111_API_AUTH", "").value or "", "required": False},
-            {"key": "AUTOMATIC1111_CFG_SCALE", "value": getattr(self.config, "AUTOMATIC1111_CFG_SCALE", "").value or 7.5, "required": False},
-            {"key": "AUTOMATIC1111_SAMPLER", "value": getattr(self.config, "AUTOMATIC1111_SAMPLER", "").value or "Euler", "required": False},
-            {"key": "AUTOMATIC1111_SCHEDULER", "value": getattr(self.config, "AUTOMATIC1111_SCHEDULER", "").value or "normal", "required": False},
+            {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value or "", "required": False},
+            {"key": "AUTOMATIC1111_API_AUTH", "value": AUTOMATIC1111_API_AUTH.value or "", "required": False},
+            {"key": "AUTOMATIC1111_CFG_SCALE", "value": AUTOMATIC1111_CFG_SCALE.value or 7.5, "required": False},
+            {"key": "AUTOMATIC1111_SAMPLER", "value": AUTOMATIC1111_SAMPLER.value or "Euler", "required": False},
+            {"key": "AUTOMATIC1111_SCHEDULER", "value": AUTOMATIC1111_SCHEDULER.value or "normal", "required": False},
         ]
 
         for config in config_items:
@@ -304,6 +304,9 @@ class Automatic1111Provider(BaseImageProvider):
             "AUTOMATIC1111_SAMPLER": self.sampler,
             "AUTOMATIC1111_SCHEDULER": self.scheduler,
         }
+
+    def is_configured(self) -> bool:
+        return bool(getattr(self, 'base_url', ''))
 
     def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
         """

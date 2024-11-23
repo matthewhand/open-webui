@@ -26,9 +26,9 @@ class ComfyUIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "COMFYUI_BASE_URL", "value": getattr(self.config, "COMFYUI_BASE_URL", "").value or "", "required": False},
-            {"key": "COMFYUI_WORKFLOW", "value": getattr(self.config, "COMFYUI_WORKFLOW", "").value or "{}", "required": False},
-            {"key": "COMFYUI_WORKFLOW_NODES", "value": getattr(self.config, "COMFYUI_WORKFLOW_NODES", "").value or "[]", "required": False},
+            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value or "", "required": False},
+            {"key": "COMFYUI_WORKFLOW", "value": COMFYUI_WORKFLOW.value or "{}", "required": False},
+            {"key": "COMFYUI_WORKFLOW_NODES", "value": COMFYUI_WORKFLOW_NODES.value or "[]", "required": False},
         ]
 
         for config in config_items:
@@ -412,6 +412,9 @@ class ComfyUIProvider(BaseImageProvider):
         except Exception as e:
             log.error(f"Failed to get model from ComfyUI workflow: {e}")
             return ""
+
+    def is_configured(self) -> bool:
+        return bool(getattr(self, 'base_url', '') and getattr(self, 'workflow', ''))
 
     def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
         """
