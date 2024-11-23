@@ -22,8 +22,8 @@ class OpenAIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "IMAGES_OPENAI_API_BASE_URL", "value": IMAGES_OPENAI_API_BASE_URL.value, "required": True},
-            {"key": "IMAGES_OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value, "required": True},
+            {"key": "IMAGES_OPENAI_API_BASE_URL", "value": IMAGES_OPENAI_API_BASE_URL.value or "", "required": True},
+            {"key": "IMAGES_OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value or "", "required": True},
         ]
 
         for config in config_items:
@@ -37,9 +37,13 @@ class OpenAIProvider(BaseImageProvider):
                 elif key == "IMAGES_OPENAI_API_KEY":
                     self.api_key = value
             elif required:
-                log.debug("OpenAIProvider: Required configuration is not set.")
+                log.debug(f"OpenAIProvider: Missing required configuration '{key}'.")
 
-        if hasattr(self, 'base_url') and hasattr(self, 'api_key'):
+        # Ensure all required attributes are set
+        self.base_url = getattr(self, "base_url", "")
+        self.api_key = getattr(self, "api_key", "")
+
+        if self.base_url and self.api_key:
             log.info(f"OpenAIProvider available with base_url: {self.base_url}")
         else:
             log.debug("OpenAIProvider: Required configuration is missing and provider is not available.")
@@ -59,7 +63,7 @@ class OpenAIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
-        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+        if not self.base_url or not self.api_key:
             log.error("OpenAIProvider is not configured properly.")
             raise Exception("OpenAIProvider is not configured.")
 
@@ -122,7 +126,7 @@ class OpenAIProvider(BaseImageProvider):
         """
         Verify the connectivity of OpenAI's API endpoint.
         """
-        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
+        if not self.base_url or not self.api_key:
             log.error("OpenAIProvider is not configured properly.")
             raise Exception("OpenAIProvider is not configured.")
 
@@ -142,16 +146,16 @@ class OpenAIProvider(BaseImageProvider):
             log.error(f"Failed to verify OpenAI API: {e}")
             raise Exception(f"Failed to verify OpenAI API: {e}")
 
-    def get_config(self) -> Dict[str, Optional[str]]:
+    def get_config(self) -> Dict[str, str]:
         """
         Retrieve OpenAI-specific configuration details.
 
         Returns:
-            Dict[str, Optional[str]]: OpenAI configuration details.
+            Dict[str, str]: OpenAI configuration details with empty strings for missing values.
         """
         return {
-            "OPENAI_API_BASE_URL": getattr(self, 'base_url', None),
-            "OPENAI_API_KEY": getattr(self, 'api_key', None),
+            "OPENAI_API_BASE_URL": self.base_url,
+            "OPENAI_API_KEY": self.api_key,
         }
 
 

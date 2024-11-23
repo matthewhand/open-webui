@@ -25,11 +25,11 @@ class Automatic1111Provider(BaseImageProvider):
     def populate_config(self):
         """
         Populate the shared configuration with AUTOMATIC1111-specific details.
-        Logs info when required config is available and skips silently if not configured.
+        Logs info when required config is available and sets defaults for missing optional fields.
         """
         config_items = [
-            {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value, "required": True},
-            {"key": "AUTOMATIC1111_API_AUTH", "value": AUTOMATIC1111_API_AUTH.value, "required": False},
+            {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value or "", "required": True},
+            {"key": "AUTOMATIC1111_API_AUTH", "value": AUTOMATIC1111_API_AUTH.value or "", "required": False},
             {"key": "AUTOMATIC1111_CFG_SCALE", "value": AUTOMATIC1111_CFG_SCALE.value or 7.5, "required": False},
             {"key": "AUTOMATIC1111_SAMPLER", "value": AUTOMATIC1111_SAMPLER.value or "Euler", "required": False},
             {"key": "AUTOMATIC1111_SCHEDULER", "value": AUTOMATIC1111_SCHEDULER.value or "normal", "required": False},
@@ -52,9 +52,16 @@ class Automatic1111Provider(BaseImageProvider):
                 elif key == "AUTOMATIC1111_SCHEDULER":
                     self.scheduler = value
             elif required:
-                log.debug("Automatic1111Provider: Required configuration is not set.")
+                log.debug(f"Automatic1111Provider: Missing required configuration '{key}'.")
 
-        if hasattr(self, 'base_url'):
+        # Ensure all required and optional fields are set
+        self.base_url = getattr(self, "base_url", "")
+        self.api_key = getattr(self, "api_key", "")
+        self.cfg_scale = getattr(self, "cfg_scale", 7.5)
+        self.sampler = getattr(self, "sampler", "Euler")
+        self.scheduler = getattr(self, "scheduler", "normal")
+
+        if self.base_url:
             log.info(f"Automatic1111Provider available with base_url: {self.base_url}")
         else:
             log.debug("Automatic1111Provider: Required configuration is missing and provider is not available.")
@@ -74,7 +81,7 @@ class Automatic1111Provider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
-        if not hasattr(self, 'base_url'):
+        if not self.base_url:
             log.error("Automatic1111Provider is not configured properly.")
             raise Exception("Automatic1111Provider is not configured.")
 
@@ -128,7 +135,7 @@ class Automatic1111Provider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of available models.
         """
-        if not hasattr(self, 'base_url'):
+        if not self.base_url:
             log.error("Automatic1111Provider is not configured properly.")
             return []
 
@@ -154,7 +161,7 @@ class Automatic1111Provider(BaseImageProvider):
         """
         Verify the connectivity of AUTOMATIC1111's API endpoint.
         """
-        if not hasattr(self, 'base_url'):
+        if not self.base_url:
             log.error("Automatic1111Provider is not configured properly.")
             raise Exception("Automatic1111Provider is not configured.")
 
@@ -172,19 +179,19 @@ class Automatic1111Provider(BaseImageProvider):
             log.error(f"Failed to verify AUTOMATIC1111 API: {e}")
             raise Exception(f"Failed to verify AUTOMATIC1111 API: {e}")
 
-    def get_config(self) -> Dict[str, Optional[str]]:
+    def get_config(self) -> Dict[str, str]:
         """
         Retrieve AUTOMATIC1111-specific configuration details.
 
         Returns:
-            Dict[str, Optional[str]]: Configuration details specific to AUTOMATIC1111.
+            Dict[str, str]: Configuration details specific to AUTOMATIC1111 with defaults for missing values.
         """
         return {
-            "AUTOMATIC1111_BASE_URL": getattr(self, 'base_url', None),
-            "AUTOMATIC1111_API_AUTH": getattr(self, 'api_key', None),
-            "AUTOMATIC1111_CFG_SCALE": getattr(self, 'cfg_scale', 7.5),
-            "AUTOMATIC1111_SAMPLER": getattr(self, 'sampler', "Euler"),
-            "AUTOMATIC1111_SCHEDULER": getattr(self, 'scheduler', "normal"),
+            "AUTOMATIC1111_BASE_URL": self.base_url,
+            "AUTOMATIC1111_API_AUTH": self.api_key,
+            "AUTOMATIC1111_CFG_SCALE": str(self.cfg_scale),  # Ensure consistent string formatting
+            "AUTOMATIC1111_SAMPLER": self.sampler,
+            "AUTOMATIC1111_SCHEDULER": self.scheduler,
         }
 
 

@@ -27,9 +27,9 @@ class ComfyUIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value, "required": True},
-            {"key": "COMFYUI_WORKFLOW", "value": COMFYUI_WORKFLOW.value, "required": False},
-            {"key": "COMFYUI_WORKFLOW_NODES", "value": COMFYUI_WORKFLOW_NODES.value, "required": False},
+            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value or "", "required": True},
+            {"key": "COMFYUI_WORKFLOW", "value": COMFYUI_WORKFLOW.value or "{}", "required": False},
+            {"key": "COMFYUI_WORKFLOW_NODES", "value": COMFYUI_WORKFLOW_NODES.value or "[]", "required": False},
         ]
 
         for config in config_items:
@@ -42,10 +42,11 @@ class ComfyUIProvider(BaseImageProvider):
                     self.base_url = value
                 elif key == "COMFYUI_WORKFLOW":
                     try:
-                        self.workflow = json.loads(value)
+                        workflow = json.loads(value) if isinstance(value, str) else value
+                        self.workflow = json.dumps(workflow, indent=2)  # Escaped string representation
                     except json.JSONDecodeError as e:
                         log.warning(f"Failed to parse {key}: {e}. Defaulting to empty dict.")
-                        self.workflow = {}
+                        self.workflow = "{}"
                 elif key == "COMFYUI_WORKFLOW_NODES":
                     try:
                         self.workflow_nodes = json.loads(value)
@@ -53,9 +54,14 @@ class ComfyUIProvider(BaseImageProvider):
                         log.warning(f"Failed to parse {key}: {e}. Defaulting to empty list.")
                         self.workflow_nodes = []
             elif required:
-                log.debug("ComfyUIProvider: Required configuration is not set.")
+                log.debug(f"ComfyUIProvider: Required configuration '{key}' is not set.")
 
-        if hasattr(self, 'base_url'):
+        # Ensure defaults
+        self.base_url = getattr(self, "base_url", "")
+        self.workflow = getattr(self, "workflow", "{}")
+        self.workflow_nodes = getattr(self, "workflow_nodes", [])
+
+        if self.base_url:
             log.info(f"ComfyUIProvider available with base_url: {self.base_url}")
         else:
             log.debug("ComfyUIProvider: Required configuration is missing and provider is not available.")
@@ -75,7 +81,7 @@ class ComfyUIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
-        if not hasattr(self, 'base_url'):
+        if not self.base_url:
             log.error("ComfyUIProvider is not configured properly.")
             raise Exception("ComfyUIProvider is not configured.")
 
@@ -93,6 +99,7 @@ class ComfyUIProvider(BaseImageProvider):
         except Exception as e:
             log.exception(f"ComfyUIProvider Error during image generation: {e}")
             raise Exception(f"ComfyUIProvider Error: {e}")
+
 
     async def list_models(self) -> List[Dict[str, str]]:
         """
@@ -184,7 +191,7 @@ class ComfyUIProvider(BaseImageProvider):
         Returns:
             Dict: Updated workflow configuration.
         """
-        workflow = self.workflow.copy()
+        workflow = json.loads(self.workflow)
         for node in self.workflow_nodes:
             node_id = node.get("node_ids", [None])[0]
             node_type = node.get("type")
@@ -292,19 +299,18 @@ class ComfyUIProvider(BaseImageProvider):
         data = {"filename": filename, "subfolder": subfolder, "type": folder_type}
         return f"{self.base_url}/view?{urllib.parse.urlencode(data)}"
 
-    def get_config(self) -> Dict[str, Optional[str]]:
+    def get_config(self) -> Dict[str, str]:
         """
         Retrieve ComfyUI-specific configuration details.
 
         Returns:
-            Dict[str, Optional[str]]: ComfyUI configuration details.
+            Dict[str, str]: ComfyUI configuration details.
         """
         return {
-            "COMFYUI_BASE_URL": getattr(self, 'base_url', None),
-            "COMFYUI_WORKFLOW": getattr(self, 'workflow', {}),
-            "COMFYUI_WORKFLOW_NODES": getattr(self, 'workflow_nodes', []),
+            "COMFYUI_BASE_URL": self.base_url,
+            "COMFYUI_WORKFLOW": self.workflow,
+            "COMFYUI_WORKFLOW_NODES": self.workflow_nodes if self.workflow_nodes else [],
         }
-
 
 # Register the provider
 provider_registry.register("comfyui", ComfyUIProvider)

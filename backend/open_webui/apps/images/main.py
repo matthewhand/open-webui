@@ -13,6 +13,7 @@ from open_webui.config import (
     IMAGE_GENERATION_MODEL,
     IMAGE_SIZE,
     IMAGE_STEPS,
+    IMAGE_ENABLED_PROVIDERS_LIST,  # New import
     CORS_ALLOW_ORIGIN,
     AppConfig,
 )
@@ -69,6 +70,11 @@ app.state.config.IMAGE_STEPS = IMAGE_STEPS
 PROVIDERS: Dict[str, BaseImageProvider] = {}
 
 for provider_name in provider_registry.list_providers():
+    # Skip providers not listed in IMAGE_ENABLED_PROVIDERS_LIST if it's set
+    if IMAGE_ENABLED_PROVIDERS_LIST and provider_name not in IMAGE_ENABLED_PROVIDERS_LIST:
+        log.info(f"Provider '{provider_name}' is not listed in IMAGE_ENABLED_PROVIDERS and will be skipped.")
+        continue
+
     provider_class = provider_registry.get_provider(provider_name)
     if not provider_class:
         log.warning(f"Provider '{provider_name}' not found in registry.")
@@ -91,9 +97,9 @@ async def get_config(user=Depends(get_admin_user)):
     general_config = {
         "enabled": ENABLE_IMAGE_GENERATION.value,
         "engine": IMAGE_GENERATION_ENGINE.value,
-        "model": IMAGE_GENERATION_MODEL.value,
-        "image_size": IMAGE_SIZE.value,
-        "image_steps": IMAGE_STEPS.value,
+        #"model": IMAGE_GENERATION_MODEL.value,
+        #"image_size": IMAGE_SIZE.value,
+        #"image_steps": IMAGE_STEPS.value,
     }
 
     # Flatten provider-specific configurations
