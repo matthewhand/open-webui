@@ -1,5 +1,3 @@
-# backend/open_webui/apps/images/providers/base.py
-
 import base64
 import logging
 import mimetypes
@@ -24,20 +22,19 @@ class BaseImageProvider(ABC):
     Provides common functionality for saving images and managing headers.
     """
 
-    def __init__(
-        self,
-        config: AppConfig,
-    ):
+    def __init__(self, config: AppConfig):
         """
         Initialize the provider with shared configurations.
 
         Args:
             config (AppConfig): Shared configuration object.
         """
+        log.debug("Initializing BaseImageProvider...")
         self.config = config
         # Ensure subclass implements populate_config
         self.populate_config()
         self.headers = self._construct_headers()
+        log.debug(f"BaseImageProvider initialized with headers: {self.headers}")
 
     def _construct_headers(self) -> Dict[str, str]:
         """
@@ -46,12 +43,14 @@ class BaseImageProvider(ABC):
         Returns:
             Dict[str, str]: A dictionary of HTTP headers.
         """
+        log.debug("Constructing headers for API requests...")
         headers = {}
         if hasattr(self, 'api_key') and self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         headers["Content-Type"] = "application/json"
         if hasattr(self, 'additional_headers'):
             headers.update(self.additional_headers)
+        log.debug(f"Constructed headers: {headers}")
         return headers
 
     @abstractmethod
@@ -72,9 +71,14 @@ class BaseImageProvider(ABC):
         Returns:
             Optional[str]: Filename of the saved image or None if failed.
         """
+        log.debug("Saving base64-encoded image...")
+        log.debug(f"Base64 string length: {len(b64_str)}")
         try:
             image_id = str(uuid.uuid4())
-            img_data = base64.b64decode(b64_str.split(",")[-1])
+            # Handle data URI scheme if present
+            if "," in b64_str:
+                b64_str = b64_str.split(",")[-1]
+            img_data = base64.b64decode(b64_str)
             mime_type = self._get_mime_type_from_b64(b64_str)
             image_format = mimetypes.guess_extension(mime_type) or ".png"
             image_filename = f"{image_id}{image_format}"
@@ -99,6 +103,7 @@ class BaseImageProvider(ABC):
         Returns:
             Optional[str]: Filename of the saved image or None if failed.
         """
+        log.debug(f"Saving image from URL: {url}")
         try:
             image_id = str(uuid.uuid4())
             with httpx.Client() as client:
@@ -133,10 +138,13 @@ class BaseImageProvider(ABC):
         Returns:
             str: MIME type of the image.
         """
+        log.debug("Extracting MIME type from base64 string...")
         if "," in b64_str and ";" in b64_str:
             header = b64_str.split(",")[0]
             mime_type = header.split(";")[0].replace("data:", "")
+            log.debug(f"Extracted MIME type: {mime_type}")
             return mime_type
+        log.debug("Defaulting MIME type to 'image/png'")
         return "image/png"
 
     def get_config(self) -> Dict[str, Optional[str]]:
@@ -146,14 +154,16 @@ class BaseImageProvider(ABC):
         Returns:
             Dict[str, Optional[str]]: Provider-specific configuration details.
         """
-        return {
+        config = {
             "base_url": getattr(self, 'base_url', None),
             "api_key": getattr(self, 'api_key', None),
             "additional_headers": getattr(self, 'additional_headers', {}),
         }
+        log.debug(f"Returning provider configuration: {config}")
+        return config
 
     @abstractmethod
-    async def generate_image(
+    def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
@@ -171,7 +181,7 @@ class BaseImageProvider(ABC):
         pass
 
     @abstractmethod
-    async def list_models(self) -> List[Dict[str, str]]:
+    def list_models(self) -> List[Dict[str, str]]:
         """
         Abstract method to list available models. Must be implemented by subclasses.
 
@@ -181,7 +191,7 @@ class BaseImageProvider(ABC):
         pass
 
     @abstractmethod
-    async def verify_url(self):
+    def verify_url(self):
         """
         Abstract method to verify the connectivity of the provider's API endpoint.
         Must be implemented by subclasses.

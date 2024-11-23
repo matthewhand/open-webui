@@ -45,7 +45,7 @@ class HuggingfaceProvider(BaseImageProvider):
         else:
             log.debug("HuggingfaceProvider: Required configuration is missing and provider is not available.")
 
-    async def generate_image(
+    def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
@@ -79,8 +79,8 @@ class HuggingfaceProvider(BaseImageProvider):
         log.debug(f"HuggingfaceProvider Payload: {json.dumps(payload, indent=2)}")
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
+            with httpx.Client() as client:
+                response = client.post(
                     url=self.base_url,
                     headers=self.headers,
                     json=payload,
@@ -107,7 +107,7 @@ class HuggingfaceProvider(BaseImageProvider):
             log.error(f"HuggingfaceProvider Error: {e}")
             raise Exception(f"HuggingfaceProvider Error: {e}")
 
-    async def list_models(self) -> List[Dict[str, str]]:
+    def list_models(self) -> List[Dict[str, str]]:
         """
         List available models from Huggingface.
 
@@ -119,8 +119,8 @@ class HuggingfaceProvider(BaseImageProvider):
             return []
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
+            with httpx.Client() as client:
+                response = client.get(
                     url=f"{self.base_url}/models",
                     headers=self.headers,
                     timeout=30.0,
@@ -133,7 +133,7 @@ class HuggingfaceProvider(BaseImageProvider):
             log.error(f"Error listing Huggingface models: {e}")
             return []
 
-    async def verify_url(self):
+    def verify_url(self):
         """
         Verify the connectivity of Huggingface's API endpoint.
         """
@@ -142,8 +142,8 @@ class HuggingfaceProvider(BaseImageProvider):
             raise Exception("HuggingfaceProvider is not configured.")
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
+            with httpx.Client() as client:
+                response = client.get(
                     url=self.base_url,
                     headers=self.headers,
                     timeout=10.0,
@@ -162,8 +162,8 @@ class HuggingfaceProvider(BaseImageProvider):
             Dict[str, Optional[str]]: Huggingface configuration details.
         """
         return {
-            "HUGGINGFACE_BASE_URL": getattr(self, 'base_url', None),
-            "HUGGINGFACE_API_KEY": getattr(self, 'api_key', None),
+            "HUGGINGFACE_BASE_URL": self.base_url,
+            "HUGGINGFACE_API_KEY": self.api_key,
         }
 
 

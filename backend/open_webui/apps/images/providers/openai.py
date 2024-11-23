@@ -1,12 +1,15 @@
 # backend/open_webui/apps/images/providers/openai.py
 
 import logging
-from typing import List, Dict, Optional
-
 import httpx
+from typing import List, Dict, Optional
 from open_webui.config import IMAGES_OPENAI_API_BASE_URL, IMAGES_OPENAI_API_KEY
+
+from fastapi import HTTPException
 from .base import BaseImageProvider
 from .registry import provider_registry
+import base64
+import mimetypes
 
 log = logging.getLogger(__name__)
 
@@ -48,7 +51,20 @@ class OpenAIProvider(BaseImageProvider):
         else:
             log.debug("OpenAIProvider: Required configuration is missing and provider is not available.")
 
-    async def generate_image(
+    def validate_config(self) -> bool:
+        """
+        Validate OpenAI-specific configuration.
+        Returns True if valid, False otherwise.
+        """
+        if not self.base_url:
+            log.error("OpenAIProvider: 'IMAGES_OPENAI_API_BASE_URL' is missing.")
+            return False
+        if not self.api_key:
+            log.error("OpenAIProvider: 'IMAGES_OPENAI_API_KEY' is missing.")
+            return False
+        return True
+
+    def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
@@ -63,12 +79,12 @@ class OpenAIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
-        if not self.base_url or not self.api_key:
+        if not self.validate_config():
             log.error("OpenAIProvider is not configured properly.")
-            raise Exception("OpenAIProvider is not configured.")
+            raise HTTPException(status_code=500, detail="OpenAIProvider configuration is incomplete.")
 
         payload = {
-            "model": self.current_model or "dall-e-2",  # Default model if not set
+            "model": self.get_model(),
             "prompt": prompt,
             "n": n,
             "size": size,
@@ -80,11 +96,16 @@ class OpenAIProvider(BaseImageProvider):
 
         log.debug(f"OpenAIProvider Payload: {payload}")
 
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
+            with httpx.Client() as client:
+                response = client.post(
                     url=f"{self.base_url}/images/generations",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=headers,
                     json=payload,
                     timeout=120.0,
                 )
@@ -94,9 +115,10 @@ class OpenAIProvider(BaseImageProvider):
             log.debug(f"OpenAIProvider Response: {res}")
 
             images = []
-            for image in res.get("data", []):
-                b64_image = image.get("b64_json")
+            for image_data in res.get("data", []):
+                b64_image = image_data.get("b64_json")
                 if b64_image:
+                    # Use the inherited method from BaseImageProvider to save the image
                     image_filename = self.save_b64_image(b64_image)
                     if image_filename:
                         images.append({"url": f"/cache/image/generations/{image_filename}"})
@@ -104,44 +126,50 @@ class OpenAIProvider(BaseImageProvider):
 
         except httpx.RequestError as e:
             log.error(f"OpenAIProvider Request failed: {e}")
-            raise Exception(f"OpenAIProvider Request failed: {e}")
+            raise HTTPException(status_code=502, detail=f"OpenAIProvider Request failed: {e}")
         except Exception as e:
             log.error(f"OpenAIProvider Error: {e}")
-            raise Exception(f"OpenAIProvider Error: {e}")
+            raise HTTPException(status_code=500, detail=f"OpenAIProvider Error: {e}")
 
-    async def list_models(self) -> List[Dict[str, str]]:
+    def list_models(self) -> List[Dict[str, str]]:
         """
         List available models for OpenAI's DALL·E API.
 
         Returns:
             List[Dict[str, str]]: List of available models.
         """
-        return [
+        models = [
             {"id": "dall-e-2", "name": "DALL·E 2"},
             {"id": "dall-e-3", "name": "DALL·E 3"},
         ]
+        log.debug(f"Available models: {models}")
+        return models
 
-    async def verify_url(self):
+    def verify_url(self):
         """
         Verify the connectivity of OpenAI's API endpoint.
         """
-        if not self.base_url or not self.api_key:
-            log.error("OpenAIProvider is not configured properly.")
-            raise Exception("OpenAIProvider is not configured.")
-
+        log.debug("Verifying OpenAI API connectivity.")
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            }
+            with httpx.Client() as client:
+                response = client.get(
                     url=f"{self.base_url}/models",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers=headers,
                     timeout=10.0,
                 )
             response.raise_for_status()
             models = response.json()
             log.info(f"OpenAI API is reachable. Retrieved models: {models}")
-        except Exception as e:
+        except httpx.RequestError as e:
             log.error(f"Failed to verify OpenAI API: {e}")
-            raise Exception(f"Failed to verify OpenAI API: {e}")
+            raise HTTPException(status_code=502, detail=f"Failed to verify OpenAI API: {e}")
+        except Exception as e:
+            log.error(f"OpenAIProvider Error during URL verification: {e}")
+            raise HTTPException(status_code=500, detail=f"OpenAIProvider Error during URL verification: {e}")
 
     def set_model(self, model: str):
         """
@@ -155,6 +183,12 @@ class OpenAIProvider(BaseImageProvider):
         self.current_model = model
         log.info(f"OpenAIProvider model set to: {self.current_model}")
 
+        # Optionally, save the updated model to the configuration
+        if hasattr(self.config, "IMAGE_GENERATION_MODEL"):
+            self.config.IMAGE_GENERATION_MODEL.value = model
+            self.config.IMAGE_GENERATION_MODEL.save()
+            log.debug(f"IMAGE_GENERATION_MODEL updated to '{model}'")
+
     def get_model(self) -> str:
         """
         Get the current image model for OpenAI's DALL·E API.
@@ -164,17 +198,17 @@ class OpenAIProvider(BaseImageProvider):
         """
         return getattr(self, "current_model", "dall-e-2")
 
-    def get_config(self) -> Dict[str, str]:
+    def get_config(self) -> Dict[str, Optional[str]]:
         """
         Retrieve OpenAI-specific configuration details.
 
         Returns:
-            Dict[str, str]: OpenAI configuration details with empty strings for missing values.
+            Dict[str, Optional[str]]: OpenAI configuration details.
         """
         return {
             "OPENAI_API_BASE_URL": self.base_url,
             "OPENAI_API_KEY": self.api_key,
-            "CURRENT_MODEL": self.get_model(),
+            "CURRENT_MODEL": self.current_model,
         }
 
 

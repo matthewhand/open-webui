@@ -5,7 +5,6 @@ import logging
 from typing import List, Dict, Optional
 
 import httpx
-from open_webui.config import IMAGES_REPLICATE_BASE_URL, IMAGES_REPLICATE_API_KEY
 from .base import BaseImageProvider
 from .registry import provider_registry
 
@@ -23,8 +22,8 @@ class ReplicateProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "IMAGES_REPLICATE_BASE_URL", "value": IMAGES_REPLICATE_BASE_URL.value, "required": True},
-            {"key": "IMAGES_REPLICATE_API_KEY", "value": IMAGES_REPLICATE_API_KEY.value, "required": True},
+            {"key": "IMAGES_REPLICATE_BASE_URL", "value": getattr(self.config, "IMAGES_REPLICATE_BASE_URL", "").value, "required": True},
+            {"key": "IMAGES_REPLICATE_API_KEY", "value": getattr(self.config, "IMAGES_REPLICATE_API_KEY", "").value, "required": True},
         ]
 
         for config in config_items:
@@ -45,7 +44,7 @@ class ReplicateProvider(BaseImageProvider):
         else:
             log.debug("ReplicateProvider: Required configuration is missing and provider is not available.")
 
-    async def generate_image(
+    def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
@@ -75,8 +74,8 @@ class ReplicateProvider(BaseImageProvider):
         log.debug(f"ReplicateProvider Payload: {json.dumps(payload, indent=2)}")
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
+            with httpx.Client() as client:
+                response = client.post(
                     url=self.base_url,
                     headers=self.headers,
                     json=payload,
@@ -103,9 +102,9 @@ class ReplicateProvider(BaseImageProvider):
             log.error(f"ReplicateProvider Error: {e}")
             raise Exception(f"ReplicateProvider Error: {e}")
 
-    async def list_models(self) -> List[Dict[str, str]]:
+    def list_models(self) -> List[Dict[str, str]]:
         """
-        List available models for image generation from Replicate's API.
+        List available models from Replicate's API.
 
         Returns:
             List[Dict[str, str]]: List of available models.
@@ -115,8 +114,8 @@ class ReplicateProvider(BaseImageProvider):
             return []
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
+            with httpx.Client() as client:
+                response = client.get(
                     url=f"{self.base_url}/models",
                     headers=self.headers,
                     timeout=30.0,
@@ -129,7 +128,7 @@ class ReplicateProvider(BaseImageProvider):
             log.error(f"Error listing Replicate models: {e}")
             return []
 
-    async def verify_url(self):
+    def verify_url(self):
         """
         Verify connectivity to the Replicate API endpoint.
         """
@@ -138,8 +137,8 @@ class ReplicateProvider(BaseImageProvider):
             raise Exception("ReplicateProvider is not configured.")
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
+            with httpx.Client() as client:
+                response = client.get(
                     url=f"{self.base_url}/v1/health",
                     headers=self.headers,
                     timeout=10.0,
@@ -159,7 +158,7 @@ class ReplicateProvider(BaseImageProvider):
         """
         return {
             "REPLICATE_BASE_URL": getattr(self, 'base_url', None),
-            "REPLICATE_API_KEY": getattr(self, 'api_key', None),
+            "REPLICATE_API_KEY": self.api_key,
         }
 
 

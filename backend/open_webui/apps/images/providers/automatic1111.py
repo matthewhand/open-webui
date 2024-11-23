@@ -1,5 +1,6 @@
 # backend/open_webui/apps/images/providers/automatic1111.py
 
+import json
 import logging
 from typing import List, Dict, Optional
 
@@ -27,6 +28,8 @@ class Automatic1111Provider(BaseImageProvider):
         Populate the shared configuration with AUTOMATIC1111-specific details.
         Logs info when required config is available and sets defaults for missing optional fields.
         """
+
+        log.debug("Executing Automatic1111Provider populate_config...")
         config_items = [
             {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value or "", "required": True},
             {"key": "AUTOMATIC1111_API_AUTH", "value": AUTOMATIC1111_API_AUTH.value or "", "required": False},
@@ -66,7 +69,23 @@ class Automatic1111Provider(BaseImageProvider):
         else:
             log.debug("Automatic1111Provider: Required configuration is missing and provider is not available.")
 
-    async def generate_image(
+
+    def validate_config(self) -> bool:
+        """
+        Validate AUTOMATIC1111-specific configuration.
+        Returns True if valid, False otherwise.
+        """
+        if not self.base_url:
+            log.error("Automatic1111Provider: 'AUTOMATIC1111_BASE_URL' is missing.")
+            return False
+        # Assuming API key is optional for some setups
+        # If required, uncomment the following lines:
+        # if not self.api_key:
+        #     log.error("Automatic1111Provider: 'AUTOMATIC1111_API_AUTH' is missing.")
+        #     return False
+        return True
+
+    def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
@@ -85,7 +104,12 @@ class Automatic1111Provider(BaseImageProvider):
             log.error("Automatic1111Provider is not configured properly.")
             raise Exception("Automatic1111Provider is not configured.")
 
-        width, height = map(int, size.lower().split("x"))
+        try:
+            width, height = map(int, size.lower().split("x"))
+        except ValueError:
+            log.error("Invalid size format. Use 'WIDTHxHEIGHT' (e.g., '512x512').")
+            raise Exception("Invalid size format. Use 'WIDTHxHEIGHT' (e.g., '512x512').")
+
         payload = {
             "prompt": prompt,
             "batch_size": n,
@@ -101,12 +125,13 @@ class Automatic1111Provider(BaseImageProvider):
 
         log.debug(f"Automatic1111Provider Payload: {payload}")
 
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = self.api_key  # Adjust if the auth scheme differs
+
         try:
-            async with httpx.AsyncClient() as client:
-                headers = {}
-                if self.api_key:
-                    headers["Authorization"] = self.api_key
-                response = await client.post(
+            with httpx.Client() as client:
+                response = client.post(
                     url=f"{self.base_url}/sdapi/v1/txt2img",
                     headers=headers,
                     json=payload,
@@ -131,7 +156,7 @@ class Automatic1111Provider(BaseImageProvider):
             log.error(f"Automatic1111Provider Error: {e}")
             raise Exception(f"Automatic1111Provider Error: {e}")
 
-    async def list_models(self) -> List[Dict[str, str]]:
+    def list_models(self) -> List[Dict[str, str]]:
         """
         List available models for image generation from AUTOMATIC1111's API.
 
@@ -143,11 +168,12 @@ class Automatic1111Provider(BaseImageProvider):
             return []
 
         try:
-            async with httpx.AsyncClient() as client:
-                headers = {}
-                if self.api_key:
-                    headers["Authorization"] = self.api_key
-                response = await client.get(
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = self.api_key
+
+            with httpx.Client() as client:
+                response = client.get(
                     url=f"{self.base_url}/sdapi/v1/sd-models",
                     headers=headers,
                     timeout=30.0,
@@ -163,7 +189,7 @@ class Automatic1111Provider(BaseImageProvider):
             log.error(f"Error listing AUTOMATIC1111 models: {e}")
             return []
 
-    async def verify_url(self):
+    def verify_url(self):
         """
         Verify the connectivity of AUTOMATIC1111's API endpoint.
         """
@@ -171,12 +197,13 @@ class Automatic1111Provider(BaseImageProvider):
             log.error("Automatic1111Provider is not configured properly.")
             raise Exception("Automatic1111Provider is not configured.")
 
+        headers = {}
+        if self.api_key:
+            headers["Authorization"] = self.api_key
+
         try:
-            async with httpx.AsyncClient() as client:
-                headers = {}
-                if self.api_key:
-                    headers["Authorization"] = self.api_key
-                response = await client.get(
+            with httpx.Client() as client:
+                response = client.get(
                     f"{self.base_url}/sdapi/v1/status",
                     headers=headers,
                     timeout=10.0,
@@ -242,9 +269,6 @@ class Automatic1111Provider(BaseImageProvider):
 
         Returns:
             str: The current model name.
-
-        Raises:
-            Exception: If fetching the model fails.
         """
         if not self.base_url:
             raise Exception("Automatic1111Provider is not configured.")
@@ -269,12 +293,12 @@ class Automatic1111Provider(BaseImageProvider):
             log.error(f"Failed to get current model: {e}")
             raise Exception(f"Failed to get current model: {e}")
 
-    def get_config(self) -> Dict[str, str]:
+    def get_config(self) -> Dict[str, Optional[str]]:
         """
         Retrieve AUTOMATIC1111-specific configuration details.
 
         Returns:
-            Dict[str, str]: Configuration details specific to AUTOMATIC1111 with defaults for missing values.
+            Dict[str, Optional[str]]: Configuration details specific to AUTOMATIC1111.
         """
         return {
             "AUTOMATIC1111_BASE_URL": self.base_url,

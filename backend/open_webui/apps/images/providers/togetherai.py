@@ -45,7 +45,7 @@ class TogetherAIProvider(BaseImageProvider):
         else:
             log.debug("TogetherAIProvider: Required configuration is missing and provider is not available.")
 
-    async def generate_image(
+    def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
     ) -> List[Dict[str, str]]:
         """
@@ -78,8 +78,8 @@ class TogetherAIProvider(BaseImageProvider):
         log.debug(f"TogetherAIProvider Payload: {json.dumps(payload, indent=2)}")
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
+            with httpx.Client() as client:
+                response = client.post(
                     url=f"{self.base_url}/generate",
                     headers=self.headers,
                     json=payload,
@@ -106,7 +106,7 @@ class TogetherAIProvider(BaseImageProvider):
             log.error(f"TogetherAIProvider Error: {e}")
             raise Exception(f"TogetherAIProvider Error: {e}")
 
-    async def list_models(self) -> List[Dict[str, str]]:
+    def list_models(self) -> List[Dict[str, str]]:
         """
         List available models for image generation from TogetherAI's API.
 
@@ -118,8 +118,8 @@ class TogetherAIProvider(BaseImageProvider):
             return []
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
+            with httpx.Client() as client:
+                response = client.get(
                     url=f"{self.base_url}/models",
                     headers=self.headers,
                     timeout=30.0,
@@ -132,7 +132,7 @@ class TogetherAIProvider(BaseImageProvider):
             log.error(f"Error listing TogetherAI models: {e}")
             return []
 
-    async def verify_url(self):
+    def verify_url(self):
         """
         Verify connectivity to the TogetherAI API endpoint.
         """
@@ -141,8 +141,8 @@ class TogetherAIProvider(BaseImageProvider):
             raise Exception("TogetherAIProvider is not configured.")
 
         try:
-            async with httpx.AsyncClient() as client:
-                response = await client.get(url=f"{self.base_url}/health", headers=self.headers, timeout=10.0)
+            with httpx.Client() as client:
+                response = client.get(url=f"{self.base_url}/health", headers=self.headers, timeout=10.0)
             response.raise_for_status()
             log.info("TogetherAI API is reachable.")
         except Exception as e:
@@ -158,7 +158,7 @@ class TogetherAIProvider(BaseImageProvider):
         """
         return {
             "TOGETHERAI_BASE_URL": getattr(self, 'base_url', None),
-            "TOGETHERAI_API_KEY": getattr(self, 'api_key', None),
+            "TOGETHERAI_API_KEY": self.api_key,
         }
 
 

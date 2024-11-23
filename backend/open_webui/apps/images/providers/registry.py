@@ -4,6 +4,7 @@ from .base import BaseImageProvider
 
 log = logging.getLogger(__name__)
 
+
 class ProviderRegistry:
     """
     A centralized registry for managing image generation providers.
