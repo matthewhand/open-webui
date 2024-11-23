@@ -103,9 +103,12 @@ class Automatic1111Provider(BaseImageProvider):
 
         try:
             async with httpx.AsyncClient() as client:
+                headers = {}
+                if self.api_key:
+                    headers["Authorization"] = self.api_key
                 response = await client.post(
                     url=f"{self.base_url}/sdapi/v1/txt2img",
-                    headers=self.headers,
+                    headers=headers,
                     json=payload,
                     timeout=120.0,
                 )
@@ -141,9 +144,12 @@ class Automatic1111Provider(BaseImageProvider):
 
         try:
             async with httpx.AsyncClient() as client:
+                headers = {}
+                if self.api_key:
+                    headers["Authorization"] = self.api_key
                 response = await client.get(
                     url=f"{self.base_url}/sdapi/v1/sd-models",
-                    headers=self.headers,
+                    headers=headers,
                     timeout=30.0,
                 )
             response.raise_for_status()
@@ -167,9 +173,12 @@ class Automatic1111Provider(BaseImageProvider):
 
         try:
             async with httpx.AsyncClient() as client:
+                headers = {}
+                if self.api_key:
+                    headers["Authorization"] = self.api_key
                 response = await client.get(
                     f"{self.base_url}/sdapi/v1/status",
-                    headers=self.headers,
+                    headers=headers,
                     timeout=10.0,
                 )
             response.raise_for_status()
@@ -178,6 +187,87 @@ class Automatic1111Provider(BaseImageProvider):
         except Exception as e:
             log.error(f"Failed to verify AUTOMATIC1111 API: {e}")
             raise Exception(f"Failed to verify AUTOMATIC1111 API: {e}")
+
+    def set_model(self, model: str):
+        """
+        Set the current model for AUTOMATIC1111.
+
+        Args:
+            model (str): The model name to set.
+
+        Raises:
+            Exception: If setting the model fails.
+        """
+        if not self.base_url:
+            raise Exception("Automatic1111Provider is not configured.")
+
+        try:
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = self.api_key
+
+            # Get current options
+            with httpx.Client() as client:
+                response = client.get(
+                    url=f"{self.base_url}/sdapi/v1/options",
+                    headers=headers,
+                    timeout=30.0,
+                )
+            response.raise_for_status()
+            options = response.json()
+
+            # Update the model if it's different
+            if options.get("sd_model_checkpoint") != model:
+                options["sd_model_checkpoint"] = model
+
+                # Set the updated options
+                with httpx.Client() as client:
+                    set_response = client.post(
+                        url=f"{self.base_url}/sdapi/v1/options",
+                        headers=headers,
+                        json=options,
+                        timeout=30.0,
+                    )
+                set_response.raise_for_status()
+                log.info(f"Model set to '{model}' successfully.")
+            else:
+                log.info(f"Model '{model}' is already set.")
+        except Exception as e:
+            log.error(f"Failed to set model '{model}': {e}")
+            raise Exception(f"Failed to set model '{model}': {e}")
+
+    def get_model(self) -> str:
+        """
+        Get the current model from AUTOMATIC1111.
+
+        Returns:
+            str: The current model name.
+
+        Raises:
+            Exception: If fetching the model fails.
+        """
+        if not self.base_url:
+            raise Exception("Automatic1111Provider is not configured.")
+
+        try:
+            headers = {}
+            if self.api_key:
+                headers["Authorization"] = self.api_key
+
+            with httpx.Client() as client:
+                response = client.get(
+                    url=f"{self.base_url}/sdapi/v1/options",
+                    headers=headers,
+                    timeout=30.0,
+                )
+            response.raise_for_status()
+            options = response.json()
+            current_model = options.get("sd_model_checkpoint", "")
+            log.info(f"Current AUTOMATIC1111 model: '{current_model}'")
+            return current_model
+        except Exception as e:
+            log.error(f"Failed to get current model: {e}")
+            raise Exception(f"Failed to get current model: {e}")
 
     def get_config(self) -> Dict[str, str]:
         """

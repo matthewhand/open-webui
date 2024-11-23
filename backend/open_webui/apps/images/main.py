@@ -50,6 +50,12 @@ class ConfigForm(BaseModel):
     image_steps: Optional[int] = None
 
 
+class ImageConfigForm(BaseModel):
+    model: Optional[str] = None
+    image_size: Optional[str] = None
+    image_steps: Optional[int] = None
+
+
 class GenerateImageForm(BaseModel):
     prompt: str
     n: int = 1
@@ -97,9 +103,6 @@ async def get_config(user=Depends(get_admin_user)):
     general_config = {
         "enabled": ENABLE_IMAGE_GENERATION.value,
         "engine": IMAGE_GENERATION_ENGINE.value,
-        #"model": IMAGE_GENERATION_MODEL.value,
-        #"image_size": IMAGE_SIZE.value,
-        #"image_steps": IMAGE_STEPS.value,
     }
 
     # Flatten provider-specific configurations
@@ -125,8 +128,7 @@ async def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
 
         # Update IMAGE_GENERATION_MODEL if provided
         if form_data.model:
-            IMAGE_GENERATION_MODEL.value = form_data.model
-            IMAGE_GENERATION_MODEL.save()
+            set_image_model(form_data.model)
 
         # Update IMAGE_SIZE if provided
         if form_data.image_size:
@@ -134,7 +136,7 @@ async def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
             IMAGE_SIZE.save()
 
         # Update IMAGE_STEPS if provided
-        if form_data.image_steps:
+        if form_data.image_steps is not None:
             IMAGE_STEPS.value = form_data.image_steps
             IMAGE_STEPS.save()
 
@@ -145,6 +147,51 @@ async def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
         raise HTTPException(status_code=500, detail="Failed to update configuration.")
 
     return {"message": "Configuration updated successfully."}
+
+@app.post("/image/config/update")
+async def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)):
+    """Update image-specific configuration such as model, image size, and steps."""
+    try:
+        # Update the model if provided
+        if form_data.model:
+            set_image_model(form_data.model)
+
+        # Validate and update IMAGE_SIZE if provided
+        if form_data.image_size:
+            size_pattern = r"^\d+x\d+$"
+            if re.match(size_pattern, form_data.image_size):
+                IMAGE_SIZE.value = form_data.image_size
+                IMAGE_SIZE.save()
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid IMAGE_SIZE format. Use 'WIDTHxHEIGHT' (e.g., 512x512)."
+                )
+
+        # Validate and update IMAGE_STEPS if provided
+        if form_data.image_steps is not None:
+            if form_data.image_steps >= 0:
+                IMAGE_STEPS.value = form_data.image_steps
+                IMAGE_STEPS.save()
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Invalid IMAGE_STEPS value. It must be a positive integer."
+                )
+
+        log.info("Image-specific configuration updated via /image/config/update endpoint.")
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        log.exception(f"Failed to update image configuration: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update image configuration.")
+
+    return {
+        "MODEL": IMAGE_GENERATION_MODEL.value,
+        "IMAGE_SIZE": IMAGE_SIZE.value,
+        "IMAGE_STEPS": IMAGE_STEPS.value,
+    }
 
 @app.get("/config/url/verify")
 async def verify_url(user=Depends(get_admin_user)):
@@ -235,9 +282,14 @@ def set_image_model(model: str):
 
     # Assuming providers have a `set_model` method
     if hasattr(provider, 'set_model'):
-        provider.set_model(model)
+        try:
+            provider.set_model(model)
+        except Exception as e:
+            log.error(f"Failed to set model for engine '{engine}': {e}")
+            raise ValueError(f"Failed to set model for engine '{engine}': {e}")
     else:
         log.warning(f"Provider '{engine}' does not implement set_model method.")
+        raise ValueError(f"Provider '{engine}' does not support model updates.")
 
     # Update the configuration
     IMAGE_GENERATION_MODEL.value = model
@@ -255,7 +307,11 @@ def get_image_model():
 
     # Assuming providers have a `get_model` method
     if hasattr(provider, 'get_model'):
-        return provider.get_model()
+        try:
+            return provider.get_model()
+        except Exception as e:
+            log.error(f"Failed to get model for engine '{engine}': {e}")
+            raise ValueError(f"Failed to get model for engine '{engine}': {e}")
     else:
         log.warning(f"Provider '{engine}' does not implement get_model method.")
         return IMAGE_GENERATION_MODEL.value
