@@ -47,7 +47,7 @@ class ProviderRegistry:
         Returns:
             Optional[Type[BaseImageProvider]]: The provider class if found, otherwise None.
         """
-        provider = _providers.get(provider_name)
+        provider = cls._providers.get(name.lower())
         if not provider:
             log.warning(f"Provider '{provider_name}' not found in registry.")
         else:
