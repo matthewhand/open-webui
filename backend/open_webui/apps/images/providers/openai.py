@@ -62,7 +62,7 @@ class OpenAIProvider(BaseImageProvider):
         if not self.base_url:
             missing_configs.append("OPENAI_API_BASE_URL")
         if not self.api_key:
-            missing_configs.append("OPENAI_API_KEY")
+            log.warning("OpenAIProvider: API key is missing. Limited functionality may be available.")
 
         if missing_configs:
             log.warning(

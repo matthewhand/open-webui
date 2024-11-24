@@ -81,10 +81,6 @@ class Automatic1111Provider(BaseImageProvider):
         if not self.base_url:
             missing_configs.append("AUTOMATIC1111_BASE_URL")
 
-        # Uncomment this block if `AUTOMATIC1111_API_AUTH` is required
-        # if not self.api_key:
-        #     missing_configs.append("AUTOMATIC1111_API_AUTH")
-
         if missing_configs:
             log.warning(
                 f"Automatic1111Provider: Missing required configurations: {', '.join(missing_configs)}."

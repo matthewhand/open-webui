@@ -76,7 +76,7 @@ class ComfyUIProvider(BaseImageProvider):
         if not self.base_url:
             missing_configs.append("COMFYUI_BASE_URL")
         if not self.workflow:
-            missing_configs.append("COMFYUI_WORKFLOW")
+            log.warning("ComfyUIProvider: Workflow is missing. Limited functionality may be available.")
 
         if missing_configs:
             log.warning(
