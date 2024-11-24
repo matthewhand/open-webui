@@ -1252,7 +1252,7 @@ RAG_WEB_SEARCH_CONCURRENT_REQUESTS = PersistentConfig(
 ####################################
 
 # Comma-separated list of enabled image providers
-IMAGE_ENABLED_PROVIDERS = os.getenv("IMAGE_ENABLED_PROVIDERS", "comfyui,openai,automatic1111") # TODO remove filter 
+IMAGE_ENABLED_PROVIDERS = os.getenv("IMAGE_ENABLED_PROVIDERS", "")
 
 # Convert the string to a list of provider names, trimming any whitespace
 IMAGE_ENABLED_PROVIDERS_LIST = [

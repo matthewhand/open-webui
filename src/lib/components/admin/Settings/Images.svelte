@@ -603,61 +603,7 @@
 						</div>
 					</div>
 				{/if}
-				{:else if config?.engine === 'togetherai'}
-					<div>
-						<div class="mb-1.5 text-sm font-medium">{$i18n.t('TogetherAI API Config')}</div>
 
-						<div class="flex gap-2 mb-1">
-							<input
-								class="flex-1 w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
-								placeholder={$i18n.t('API Base URL')}
-								bind:value={config.togetherai.IMAGES_TOGETHERAI_BASE_URL}
-								required
-							/>
-
-							<SensitiveInput
-								placeholder={$i18n.t('API Key')}
-								bind:value={config.togetherai.IMAGES_TOGETHERAI_API_KEY}
-							/>
-						</div>
-					</div>
-				{:else if config?.engine === 'replicate'}
-					<div>
-						<div class="mb-1.5 text-sm font-medium">{$i18n.t('Replicate API Config')}</div>
-
-						<div class="flex gap-2 mb-1">
-							<input
-								class="flex-1 w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
-								placeholder={$i18n.t('API Base URL')}
-								bind:value={config.replicate.IMAGES_REPLICATE_BASE_URL}
-								required
-							/>
-
-							<SensitiveInput
-								placeholder={$i18n.t('API Key')}
-								bind:value={config.replicate.IMAGES_REPLICATE_API_KEY}
-							/>
-						</div>
-					</div>
-				{:else if config?.engine === 'huggingface'}
-					<div>
-						<div class="mb-1.5 text-sm font-medium">{$i18n.t('Huggingface API Config')}</div>
-
-						<div class="flex gap-2 mb-1">
-							<input
-								class="flex-1 w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
-								placeholder={$i18n.t('API Base URL')}
-								bind:value={config.huggingface.IMAGES_HUGGINGFACE_BASE_URL}
-								required
-							/>
-
-							<SensitiveInput
-								placeholder={$i18n.t('API Key')}
-								bind:value={config.huggingface.IMAGES_HUGGINGFACE_API_KEY}
-							/>
-						</div>
-					</div>
-				{/if}
 			</div>
 
 			{#if config?.enabled}
