@@ -27,15 +27,6 @@ from .base import BaseImageEngine
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["IMAGES"])
 
-# Initialize logger
-logging.basicConfig(
-    level=logging.DEBUG,  # Capture all debug logs
-    format="%(levelname)s %(asctime)s %(name)s - %(message)s",
-)
-log = logging.getLogger(__name__)
-logging.getLogger().setLevel(logging.DEBUG)
-log.debug("main.py has started execution")  # Top-level confirmation
-
 # FastAPI setup
 app = FastAPI(
     docs_url="/docs" if ENV == "dev" else None,
@@ -151,28 +142,28 @@ def validation_exception_handler(request: Request, exc: RequestValidationError):
         },
     )
 
-# Middleware to log incoming requests
-@app.middleware("http")
-async def log_requests(request: Request, call_next):
-    log.debug(f"Incoming request: {request.method} {request.url}")
+# # Middleware to log incoming requests
+# @app.middleware("http")
+# async def log_requests(request: Request, call_next):
+#     log.debug(f"Incoming request: {request.method} {request.url}")
 
-    try:
-        # Debug request body
-        body = await request.body()
-        if body:
-            log.debug(f"Request body: {body.decode('utf-8')}")
-        else:
-            log.debug("Request body is empty.")
-    except Exception as e:
-        log.warning(f"Failed to read request body: {e}")
+#     try:
+#         # Debug request body
+#         body = await request.body()
+#         if body:
+#             log.debug(f"Request body: {body.decode('utf-8')}")
+#         else:
+#             log.debug("Request body is empty.")
+#     except Exception as e:
+#         log.warning(f"Failed to read request body: {e}")
 
-    try:
-        response = await call_next(request)
-        log.debug(f"Response status: {response.status_code}")
-        return response
-    except Exception as e:
-        log.error(f"Middleware error: {e}")
-        raise e
+#     try:
+#         response = await call_next(request)
+#         log.debug(f"Response status: {response.status_code}")
+#         return response
+#     except Exception as e:
+#         log.error(f"Middleware error: {e}")
+#         raise e
 
 # Utility function to fetch and sanitize engine configurations
 def get_populated_configs(engines: Dict[str, BaseImageEngine]) -> Dict[str, Dict[str, Any]]:
