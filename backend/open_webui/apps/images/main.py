@@ -1,6 +1,14 @@
+import asyncio
+import base64
+import json
 import logging
-from typing import Dict, Optional
+import mimetypes
+import re
+import uuid
+from pathlib import Path
+from typing import Optional, Dict, Any
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -8,25 +16,21 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from open_webui.config import (
-    ENABLE_IMAGE_GENERATION,
     IMAGE_ENABLED_PROVIDERS,
     IMAGE_ENABLED_PROVIDERS_LIST,  # Already parsed as a list
     IMAGE_GENERATION_ENGINE,
+    ENABLE_IMAGE_GENERATION,
     IMAGE_GENERATION_MODEL,
     IMAGE_SIZE,
     IMAGE_STEPS,
     CORS_ALLOW_ORIGIN,
     AppConfig,
 )
-from open_webui.env import ENV, SRC_LOG_LEVELS  # TODO: ENABLE_FORWARD_USER_INFO_HEADERS
+from open_webui.env import ENV, SRC_LOG_LEVELS #, ENABLE_FORWARD_USER_INFO_HEADERS
 from open_webui.utils.utils import get_admin_user, get_verified_user
 
 from .providers.registry import provider_registry
 from .providers.base import BaseImageProvider
-
-from pathlib import Path
-import os
-import re
 
 # Initialize logger
 logging.basicConfig(
@@ -53,13 +57,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Define engine mapping
-ENGINE_MAPPING = {
-    "openai": "OpenAI",
-    "comfyui": "ComfyUI",
-    # "automatic1111": "Automatic1111"  # Excluded
-}
-
 # Pydantic models for configuration updates and image generation
 class ConfigForm(BaseModel):
     enabled: Optional[bool] = None
@@ -79,42 +76,17 @@ class GenerateImageForm(BaseModel):
     size: Optional[str] = None
     negative_prompt: Optional[str] = None
 
-# Utility function to fetch and sanitize provider configurations
-def get_populated_configs(providers: Dict[str, BaseImageProvider]) -> Dict[str, Dict[str, str]]:
-    """
-    Dynamically fetch all configurations from providers,
-    substituting missing or None values with empty strings.
-    
-    Args:
-        providers (Dict[str, BaseImageProvider]): A dictionary of provider instances.
-    
-    Returns:
-        Dict[str, Dict[str, str]]: A dictionary containing sanitized configurations for each provider.
-    """
-    populated_config = {}
-    for provider_key, provider_instance in providers.items():
-        provider_config = provider_instance.get_config()
-        # Substitute None with ""
-        clean_config = {k: (v if v is not None else "") for k, v in provider_config.items()}
-        populated_config[provider_key] = clean_config
-    return populated_config
-
 # Initialize shared configuration
 app.state.config = AppConfig()
 
 app.state.config.ENGINE = IMAGE_GENERATION_ENGINE
 app.state.config.ENABLED = ENABLE_IMAGE_GENERATION
-
 app.state.config.MODEL = IMAGE_GENERATION_MODEL
-
 app.state.config.IMAGE_SIZE = IMAGE_SIZE
 app.state.config.IMAGE_STEPS = IMAGE_STEPS
 
 # Dynamically instantiate providers from the registry
 PROVIDERS: Dict[str, BaseImageProvider] = {}
-
-# Parse enabled providers from configuration (already done in config.py)
-# IMAGE_ENABLED_PROVIDERS_LIST is a list of provider names in lowercase
 
 log.debug(f"IMAGE_ENABLED_PROVIDERS raw value: '{IMAGE_ENABLED_PROVIDERS}'")
 log.debug(f"Parsed IMAGE_ENABLED_PROVIDERS_LIST: {IMAGE_ENABLED_PROVIDERS_LIST}")
@@ -215,6 +187,26 @@ async def log_requests(request: Request, call_next):
         log.error(f"Middleware error: {e}")
         raise e
 
+# Utility function to fetch and sanitize provider configurations
+def get_populated_configs(providers: Dict[str, BaseImageProvider]) -> Dict[str, Dict[str, Any]]:
+    """
+    Dynamically fetch all configurations from providers,
+    substituting missing or None values with empty strings.
+
+    Args:
+        providers (Dict[str, BaseImageProvider]): A dictionary of provider instances.
+
+    Returns:
+        Dict[str, Dict[str, Any]]: A dictionary containing sanitized configurations for each provider.
+    """
+    populated_config = {}
+    for provider_key, provider_instance in providers.items():
+        provider_config = provider_instance.get_config()
+        # Substitute None with ""
+        clean_config = {k: (v if v is not None else "") for k, v in provider_config.items()}
+        populated_config[provider_key] = clean_config
+    return populated_config
+
 # Routes
 
 @app.get("/config")
@@ -225,7 +217,7 @@ def get_config(user=Depends(get_admin_user)):
     log.debug("Retrieving current configuration.")
     general_config = {
         "enabled": getattr(app.state.config, "ENABLED", False),
-        "engine": ENGINE_MAPPING.get(getattr(app.state.config, "ENGINE", ""), ""),
+        "engine": getattr(app.state.config, "ENGINE", ""),
     }
 
     # Dynamically fetch and sanitize provider configurations
@@ -242,7 +234,6 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
     """Update application configuration."""
     try:
         log.debug(f"Updating configuration with data: {form_data.dict()}")
-
         data = form_data.dict()
 
         # Update ENABLED
@@ -250,89 +241,53 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
             app.state.config.ENABLED = data["enabled"]
             log.debug(f"Set ENABLED to {data['enabled']}")
 
-            # If enabled is set to True and engine is not set or invalid, set to default
-            if data["enabled"]:
-                current_engine = getattr(app.state.config, "ENGINE", "").lower()
-                if not current_engine or current_engine not in PROVIDERS:
-                    app.state.config.ENGINE = "openai"
-                    log.debug("ENGINE not set or invalid. Defaulting to 'openai'.")
-
-        # Update ENGINE if provided
+        # Update ENGINE
         if "engine" in data and data["engine"]:
             new_engine = data["engine"].lower()
 
-            # Validate the new engine is in the enabled list
             if IMAGE_ENABLED_PROVIDERS_LIST and new_engine not in IMAGE_ENABLED_PROVIDERS_LIST:
-                log.error(f"Engine '{new_engine}' is not enabled.")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Engine '{new_engine}' is not enabled."
-                )
-
-            # Check if the new engine exists in PROVIDERS
+                raise HTTPException(status_code=400, detail=f"Engine '{new_engine}' is not enabled.")
             if new_engine not in PROVIDERS:
-                log.error(f"Engine '{new_engine}' is not properly configured.")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Engine '{new_engine}' is not properly configured."
-                )
+                raise HTTPException(status_code=400, detail=f"Engine '{new_engine}' is not properly configured.")
 
-            # Set the new engine
             app.state.config.ENGINE = new_engine
             log.debug(f"Set ENGINE to '{new_engine}'.")
 
-        # Update provider-specific configurations only for the active provider
-        engine = getattr(app.state.config, "ENGINE", "").lower()
-        active_provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
-
+        # Update active provider configurations
+        active_provider = PROVIDERS.get(app.state.config.ENGINE)
         if active_provider:
-            provider_config = data.get(engine, {})
+            provider_config = data.get(app.state.config.ENGINE, {})
             if isinstance(provider_config, dict):
                 active_provider.update_config_in_app(provider_config, app.state.config)
-                log.debug(f"Provider '{engine}' specific configuration updated.")
-        else:
-            log.warning("No active provider found. Please configure an engine.")
+                log.debug(f"Updated config for provider '{app.state.config.ENGINE}'.")
 
-        # Update general configurations
-        if "model" in data and data["model"]:
-            log.debug(f"Setting MODEL to {data['model']}")
-            set_image_model(data["model"])
-
-        if "image_size" in data and data["image_size"]:
-            size_pattern = r"^\d+x\d+$"
-            if re.match(size_pattern, data["image_size"]):
-                app.state.config.IMAGE_SIZE = data["image_size"]
-                log.debug(f"Set IMAGE_SIZE to {data['image_size']}")
-            else:
-                log.error("Invalid IMAGE_SIZE format received.")
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid IMAGE_SIZE format. Use 'WIDTHxHEIGHT' (e.g., 512x512)."
-                )
-
-        if "image_steps" in data and data["image_steps"] is not None:
-            if isinstance(data["image_steps"], int) and data["image_steps"] >= 0:
-                app.state.config.IMAGE_STEPS = data["image_steps"]
-                log.debug(f"Set IMAGE_STEPS to {data['image_steps']}")
-            else:
-                log.error("Invalid IMAGE_STEPS value received.")
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid IMAGE_STEPS value. It must be a positive integer."
-                )
+        # Populate provider-specific configs
+        provider_configs = get_populated_configs(PROVIDERS)
 
         # Validate the active provider's configuration
+        warnings = []
         if active_provider and not active_provider.validate_config():
-            log.warning(f"Provider '{ENGINE_MAPPING.get(engine, engine)}' is not fully configured. Please complete its configuration.")
+            warnings.append(f"Provider '{app.state.config.ENGINE}' is not fully configured. Please complete its configuration.")
+
+        # Return a complete response with warnings
+        combined_config = {
+            "enabled": app.state.config.ENABLED,
+            "engine": app.state.config.ENGINE,
+            **provider_configs,
+        }
+
+        if warnings:
             return JSONResponse(
                 status_code=200,
                 content={
-                    "message": "Configuration updated successfully.",
-                    "warning": f"Provider '{ENGINE_MAPPING.get(engine, engine)}' is not fully configured. Please complete its configuration."
-                }
+                    "message": "Configuration updated with warnings.",
+                    "config": combined_config,
+                    "warnings": warnings,
+                },
             )
 
-        log.info("Configuration updated via /config/update endpoint.")
+        log.info("Configuration updated successfully.")
+        return combined_config
 
     except HTTPException as he:
         log.error(f"HTTPException during configuration update: {he.detail}")
@@ -340,116 +295,6 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
     except Exception as e:
         log.exception(f"Failed to update configuration: {e}")
         raise HTTPException(status_code=500, detail="Failed to update configuration.")
-
-    log.debug("Configuration update completed successfully.")
-    return {"message": "Configuration updated successfully."}
-
-@app.post("/config/save")
-def save_config(form_data: ConfigForm, user=Depends(get_admin_user)):
-    """Update and validate general application configuration."""
-    try:
-        log.debug(f"Saving and validating general configuration with data: {form_data.dict()}")
-
-        data = form_data.dict()
-
-        # Update ENABLED
-        if "enabled" in data and data["enabled"] is not None:
-            app.state.config.ENABLED = data["enabled"]
-            log.debug(f"Set ENABLED to {data['enabled']}")
-
-            # If enabled is set to True and engine is not set or invalid, set to default
-            if data["enabled"]:
-                current_engine = getattr(app.state.config, "ENGINE", "").lower()
-                if not current_engine or current_engine not in PROVIDERS:
-                    app.state.config.ENGINE = "openai"
-                    log.debug("ENGINE not set or invalid. Defaulting to 'openai'.")
-
-        # Update ENGINE if provided
-        if "engine" in data and data["engine"]:
-            new_engine = data["engine"].lower()
-
-            # Validate the new engine is in the enabled list
-            if IMAGE_ENABLED_PROVIDERS_LIST and new_engine not in IMAGE_ENABLED_PROVIDERS_LIST:
-                log.error(f"Engine '{new_engine}' is not enabled.")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Engine '{new_engine}' is not enabled."
-                )
-
-            # Check if the new engine exists in PROVIDERS
-            if new_engine not in PROVIDERS:
-                log.error(f"Engine '{new_engine}' is not properly configured.")
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Engine '{new_engine}' is not properly configured."
-                )
-
-            # Set the new engine
-            app.state.config.ENGINE = new_engine
-            log.debug(f"Set ENGINE to '{new_engine}'.")
-
-        # Update provider-specific configurations only for the active provider
-        engine = getattr(app.state.config, "ENGINE", "").lower()
-        active_provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
-
-        if active_provider:
-            provider_config = data.get(engine, {})
-            if isinstance(provider_config, dict):
-                active_provider.update_config_in_app(provider_config, app.state.config)
-                log.debug(f"Provider '{engine}' specific configuration updated.")
-        else:
-            log.warning("No active provider found. Please configure an engine.")
-
-        # Update general configurations
-        if "model" in data and data["model"]:
-            log.debug(f"Setting MODEL to {data['model']}")
-            set_image_model(data["model"])
-
-        if "image_size" in data and data["image_size"]:
-            size_pattern = r"^\d+x\d+$"
-            if re.match(size_pattern, data["image_size"]):
-                app.state.config.IMAGE_SIZE = data["image_size"]
-                log.debug(f"Set IMAGE_SIZE to {data['image_size']}")
-            else:
-                log.error("Invalid IMAGE_SIZE format received.")
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid IMAGE_SIZE format. Use 'WIDTHxHEIGHT' (e.g., 512x512)."
-                )
-
-        if "image_steps" in data and data["image_steps"] is not None:
-            if isinstance(data["image_steps"], int) and data["image_steps"] >= 0:
-                app.state.config.IMAGE_STEPS = data["image_steps"]
-                log.debug(f"Set IMAGE_STEPS to {data['image_steps']}")
-            else:
-                log.error("Invalid IMAGE_STEPS value received.")
-                raise HTTPException(
-                    status_code=400,
-                    detail="Invalid IMAGE_STEPS value. It must be a positive integer."
-                )
-
-        # Validate the active provider's configuration
-        if active_provider and not active_provider.validate_config():
-            log.warning(f"Provider '{ENGINE_MAPPING.get(engine, engine)}' is not fully configured. Please complete its configuration.")
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "message": "Configuration saved successfully.",
-                    "warning": f"Provider '{ENGINE_MAPPING.get(engine, engine)}' is not fully configured. Please complete its configuration."
-                }
-            )
-
-        log.info("Configuration saved and validated successfully via /config/save endpoint.")
-
-    except HTTPException as he:
-        log.error(f"HTTPException during configuration save: {he.detail}")
-        raise he
-    except Exception as e:
-        log.exception(f"Failed to save configuration: {e}")
-        raise HTTPException(status_code=500, detail="Failed to save configuration.")
-
-    log.debug("Configuration save completed successfully.")
-    return {"message": "Configuration saved successfully."}
 
 @app.post("/image/config/update")
 def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)):
@@ -496,10 +341,10 @@ def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)
         engine = getattr(app.state.config, "ENGINE", "").lower()
         provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
         if not provider or not provider.validate_config():
-            log.error(f"Validation failed for provider '{ENGINE_MAPPING.get(engine, engine)}' after configuration update.")
+            log.error(f"Validation failed for provider '{engine}'. Please check the configuration.")
             raise HTTPException(
                 status_code=400,
-                detail=f"Validation failed for provider '{ENGINE_MAPPING.get(engine, engine)}'. Please check the configuration."
+                detail=f"Validation failed for provider '{engine}'. Please check the configuration."
             )
 
         log.info("Image configuration updated successfully via /image/config/update endpoint.")
@@ -513,7 +358,7 @@ def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)
 
     # Return the updated image configuration
     image_config = {
-        "MODEL": ENGINE_MAPPING.get(getattr(app.state.config, "ENGINE", "").lower(), ""),
+        "MODEL": getattr(app.state.config, "MODEL", ""),
         "IMAGE_SIZE": getattr(app.state.config, "IMAGE_SIZE", ""),
         "IMAGE_STEPS": getattr(app.state.config, "IMAGE_STEPS", ""),
     }
@@ -541,7 +386,7 @@ def verify_url(user=Depends(get_admin_user)):
     try:
         provider.verify_url()  # Call provider-specific verification
         log.info(f"Engine '{engine}' verified successfully.")
-        return {"message": f"Engine '{ENGINE_MAPPING.get(engine, engine)}' verified successfully."}
+        return {"message": f"Engine '{engine}' verified successfully."}
     except HTTPException as e:
         # Re-raise HTTPExceptions from provider.verify_url()
         raise e
@@ -550,7 +395,7 @@ def verify_url(user=Depends(get_admin_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/models")
-def get_available_models(user=Depends(get_verified_user)):
+def get_models(user=Depends(get_verified_user)):
     """
     Retrieve models available in the selected engine.
     """
@@ -560,21 +405,31 @@ def get_available_models(user=Depends(get_verified_user)):
     log.debug(f"Fetching available models for engine '{engine}'")
 
     if not provider:
-        log.error(f"Engine '{engine}' is not supported.")
-        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not supported.")
+        return {
+            "status": "error",
+            "message": f"Engine '{engine}' is not supported. Please choose a valid engine.",
+            "models": []
+        }
 
-    # Check if provider is configured
-    if not provider.is_configured():
-        log.warning(f"Engine '{engine}' is not properly configured.")
-        return {"status": "warning", "message": f"Engine '{ENGINE_MAPPING.get(engine, engine)}' is not properly configured."}
+    # Validate configuration
+    valid, missing_fields = provider.validate_config()
+    if not valid:
+        return {
+            "status": "warning",
+            "message": f"Engine '{engine}' is not fully configured. Missing: {', '.join(missing_fields)}",
+            "models": []
+        }
 
     try:
         models = provider.list_models()
-        log.debug(f"Available models for engine '{engine}': {models}")
         return {"status": "ok", "models": models}
     except Exception as e:
         log.exception(f"Failed to retrieve models for engine '{engine}': {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {
+            "status": "error",
+            "message": f"Failed to retrieve models: {e}",
+            "models": []
+        }
 
 @app.post("/generations")
 def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user)):
@@ -621,7 +476,7 @@ def get_image_config(user=Depends(get_admin_user)):
         image_steps = getattr(app.state.config, "IMAGE_STEPS", "")
 
         image_config = {
-            "MODEL": ENGINE_MAPPING.get(getattr(app.state.config, "ENGINE", "").lower(), model) if model else "",
+            "MODEL": getattr(app.state.config, "MODEL", ""),
             "IMAGE_SIZE": image_size if image_size else "",
             "IMAGE_STEPS": image_steps if image_steps else "",
         }

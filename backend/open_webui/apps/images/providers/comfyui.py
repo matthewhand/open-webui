@@ -65,7 +65,13 @@ class ComfyUIProvider(BaseImageProvider):
         else:
             log.debug("ComfyUIProvider: Required configuration is missing and provider is not available.")
 
-    def validate_config(self) -> bool:
+    def validate_config(self) -> (bool, list):
+        """
+        Validate the ComfyUIProvider's configuration.
+
+        Returns:
+            tuple: (is_valid (bool), missing_fields (list of str))
+        """
         missing_configs = []
         if not self.base_url:
             missing_configs.append("COMFYUI_BASE_URL")
@@ -76,12 +82,10 @@ class ComfyUIProvider(BaseImageProvider):
             log.warning(
                 f"ComfyUIProvider: Missing required configurations: {', '.join(missing_configs)}."
             )
-            return False
+            return False, missing_configs
 
-        # Additional validation logic can be added here
-        return True
-
-
+        # Additional validation logic can be added here if needed
+        return True, []
 
     def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -433,20 +437,26 @@ class ComfyUIProvider(BaseImageProvider):
             app_config (AppConfig): The shared configuration object.
         """
         log.debug("ComfyUIProvider updating configuration.")
+        
+        # Fallback to AppConfig.ENGINE if "engine" is not in form_data
         engine = form_data.get("engine", "").lower()
-        if engine != "comfyui":
-            log.debug("ComfyUIProvider: Engine not set to 'comfyui'; skipping config update.")
+        current_engine = getattr(app_config, "ENGINE", "").lower()
+
+        if engine != "comfyui" and current_engine != "comfyui":
+            log.warning("ComfyUIProvider: Engine not set to 'comfyui'; skipping config update.")
             return
 
+        # Update model if provided
         if form_data.get("model"):
             self.set_model(form_data["model"])
+            log.debug(f"ComfyUIProvider: Model updated to {form_data['model']}")
 
+        # Update image size
         if form_data.get("image_size"):
             app_config.IMAGE_SIZE.value = form_data["image_size"]
-            # app_config.IMAGE_SIZE.save()
             log.debug(f"ComfyUIProvider: IMAGE_SIZE updated to {form_data['image_size']}")
 
+        # Update image steps
         if form_data.get("image_steps") is not None:
             app_config.IMAGE_STEPS.value = form_data["image_steps"]
-            # app_config.IMAGE_STEPS.save()
             log.debug(f"ComfyUIProvider: IMAGE_STEPS updated to {form_data['image_steps']}")

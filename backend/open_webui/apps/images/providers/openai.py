@@ -51,7 +51,13 @@ class OpenAIProvider(BaseImageProvider):
         else:
             log.debug("OpenAIProvider: Required configuration is missing and provider is not available.")
 
-    def validate_config(self) -> bool:
+    def validate_config(self) -> (bool, list):
+        """
+        Validate the OpenAIProvider's configuration.
+
+        Returns:
+            tuple: (is_valid (bool), missing_fields (list of str))
+        """
         missing_configs = []
         if not self.base_url:
             missing_configs.append("OPENAI_API_BASE_URL")
@@ -62,10 +68,10 @@ class OpenAIProvider(BaseImageProvider):
             log.warning(
                 f"OpenAIProvider: Missing required configurations: {', '.join(missing_configs)}."
             )
-            return False
+            return False, missing_configs
 
-        # Additional validation logic can be added here (e.g., URL format, API key pattern)
-        return True
+        # Additional validation logic can be added here
+        return True, []
 
     def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -229,21 +235,34 @@ class OpenAIProvider(BaseImageProvider):
             app_config (AppConfig): The shared configuration object.
         """
         log.debug("OpenAIProvider updating configuration.")
+        
+        # Fallback to AppConfig.ENGINE if "engine" is not in form_data
         engine = form_data.get("engine", "").lower()
-        if engine != "openai":
-            log.debug("OpenAIProvider: Engine not set to 'openai'; skipping config update.")
+        current_engine = getattr(app_config, "ENGINE", "").lower()
+
+        if engine != "openai" and current_engine != "openai":
+            log.warning("OpenAIProvider: Engine not set to 'openai'; skipping config update.")
             return
 
+        # Update model if provided
         if form_data.get("model"):
             self.set_model(form_data["model"])
+            log.debug(f"OpenAIProvider: Model updated to {form_data['model']}")
 
-        # Update other configurations if necessary
+        # Update image size
         if form_data.get("image_size"):
             app_config.IMAGE_SIZE.value = form_data["image_size"]
-            # app_config.IMAGE_SIZE.save()
             log.debug(f"OpenAIProvider: IMAGE_SIZE updated to {form_data['image_size']}")
 
+        # Update image steps
         if form_data.get("image_steps") is not None:
             app_config.IMAGE_STEPS.value = form_data["image_steps"]
-            # app_config.IMAGE_STEPS.save()
             log.debug(f"OpenAIProvider: IMAGE_STEPS updated to {form_data['image_steps']}")
+
+        # Additional OpenAI-specific configurations (if any)
+        if form_data.get("api_key"):
+            self.api_key = form_data["api_key"]
+            log.debug("OpenAIProvider: API key updated.")
+        if form_data.get("base_url"):
+            self.base_url = form_data["base_url"]
+            log.debug(f"OpenAIProvider: Base URL updated to {form_data['base_url']}")

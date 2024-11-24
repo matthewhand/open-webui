@@ -70,20 +70,29 @@ class Automatic1111Provider(BaseImageProvider):
         else:
             log.debug("Automatic1111Provider: Required configuration is missing and provider is not available.")
 
-    def validate_config(self) -> bool:
+    def validate_config(self) -> (bool, list):
         """
-        Validate AUTOMATIC1111-specific configuration.
-        Returns True if valid, False otherwise.
+        Validate the Automatic1111Provider's configuration.
+
+        Returns:
+            tuple: (is_valid (bool), missing_fields (list of str))
         """
+        missing_configs = []
         if not self.base_url:
-            log.warning("Automatic1111Provider: 'AUTOMATIC1111_BASE_URL' is missing.")
-            return False
-        # Assuming API key is optional for some setups
-        # If required, uncomment the following lines:
+            missing_configs.append("AUTOMATIC1111_BASE_URL")
+
+        # Uncomment this block if `AUTOMATIC1111_API_AUTH` is required
         # if not self.api_key:
-        #     log.error("Automatic1111Provider: 'AUTOMATIC1111_API_AUTH' is missing.")
-        #     return False
-        return True
+        #     missing_configs.append("AUTOMATIC1111_API_AUTH")
+
+        if missing_configs:
+            log.warning(
+                f"Automatic1111Provider: Missing required configurations: {', '.join(missing_configs)}."
+            )
+            return False, missing_configs
+
+        # Additional validation logic can be added here
+        return True, []
 
     def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -317,20 +326,36 @@ class Automatic1111Provider(BaseImageProvider):
             app_config (AppConfig): The shared configuration object.
         """
         log.debug("Automatic1111Provider updating configuration.")
+        
+        # Fallback to AppConfig.ENGINE if "engine" is not in form_data
         engine = form_data.get("engine", "").lower()
-        if engine != "automatic1111":
-            log.debug("Automatic1111Provider: Engine not set to 'automatic1111'; skipping config update.")
+        current_engine = getattr(app_config, "ENGINE", "").lower()
+
+        if engine != "automatic1111" and current_engine != "automatic1111":
+            log.warning("Automatic1111Provider: Engine not set to 'automatic1111'; skipping config update.")
             return
 
+        # Update model if provided
         if form_data.get("model"):
             self.set_model(form_data["model"])
+            log.debug(f"Automatic1111Provider: Model updated to {form_data['model']}")
 
+        # Update image size
         if form_data.get("image_size"):
             app_config.IMAGE_SIZE.value = form_data["image_size"]
-            # app_config.IMAGE_SIZE.save()
             log.debug(f"Automatic1111Provider: IMAGE_SIZE updated to {form_data['image_size']}")
 
+        # Update image steps
         if form_data.get("image_steps") is not None:
             app_config.IMAGE_STEPS.value = form_data["image_steps"]
-            # app_config.IMAGE_STEPS.save()
             log.debug(f"Automatic1111Provider: IMAGE_STEPS updated to {form_data['image_steps']}")
+
+        # Update base URL
+        if form_data.get("AUTOMATIC1111_BASE_URL"):
+            self.base_url = form_data["AUTOMATIC1111_BASE_URL"]
+            log.debug(f"Automatic1111Provider: BASE_URL updated to {form_data['AUTOMATIC1111_BASE_URL']}")
+
+        # Update optional API authentication
+        if form_data.get("AUTOMATIC1111_API_AUTH"):
+            self.api_auth = form_data["AUTOMATIC1111_API_AUTH"]
+            log.debug("Automatic1111Provider: API authentication updated.")
