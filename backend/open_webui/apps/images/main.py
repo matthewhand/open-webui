@@ -8,7 +8,39 @@ import uuid
 from pathlib import Path
 from typing import Optional, Dict, Any
 
+<<<<<<< HEAD
 import httpx
+=======
+import requests
+from open_webui.apps.images.utils.comfyui import (
+    ComfyUIGenerateImageForm,
+    ComfyUIWorkflow,
+    comfyui_generate_image,
+)
+from open_webui.config import (
+    AUTOMATIC1111_API_AUTH,
+    AUTOMATIC1111_BASE_URL,
+    AUTOMATIC1111_CFG_SCALE,
+    AUTOMATIC1111_SAMPLER,
+    AUTOMATIC1111_SCHEDULER,
+    CACHE_DIR,
+    COMFYUI_BASE_URL,
+    COMFYUI_WORKFLOW,
+    COMFYUI_WORKFLOW_NODES,
+    CORS_ALLOW_ORIGIN,
+    ENABLE_IMAGE_GENERATION,
+    IMAGE_GENERATION_ENGINE,
+    IMAGE_GENERATION_MODEL,
+    IMAGE_SIZE,
+    IMAGE_STEPS,
+    IMAGES_OPENAI_API_BASE_URL,
+    IMAGES_OPENAI_API_KEY,
+    AppConfig,
+)
+from open_webui.constants import ERROR_MESSAGES
+from open_webui.env import ENV, SRC_LOG_LEVELS, ENABLE_FORWARD_USER_INFO_HEADERS
+
+>>>>>>> upstream/main
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -41,7 +73,13 @@ log = logging.getLogger(__name__)
 logging.getLogger().setLevel(logging.DEBUG)
 log.debug("main.py has started execution")  # Top-level confirmation
 
+<<<<<<< HEAD
 # FastAPI setup
+=======
+IMAGE_CACHE_DIR = Path(CACHE_DIR).joinpath("./image/generations/")
+IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+>>>>>>> upstream/main
 app = FastAPI(
     docs_url="/docs" if ENV == "dev" else None,
     openapi_url="/openapi.json" if ENV == "dev" else None,
@@ -454,6 +492,7 @@ def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user
     log.debug(f"Using image size: '{size}'")
 
     try:
+<<<<<<< HEAD
         images = provider.generate_image(
             prompt=form_data.prompt,
             n=form_data.n,
@@ -462,6 +501,151 @@ def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user
         )
         log.debug(f"Generated images: {images}")
         return {"images": images}
+=======
+        if app.state.config.ENGINE == "openai":
+            headers = {}
+            headers["Authorization"] = f"Bearer {app.state.config.OPENAI_API_KEY}"
+            headers["Content-Type"] = "application/json"
+
+            if ENABLE_FORWARD_USER_INFO_HEADERS:
+                headers["X-OpenWebUI-User-Name"] = user.name
+                headers["X-OpenWebUI-User-Id"] = user.id
+                headers["X-OpenWebUI-User-Email"] = user.email
+                headers["X-OpenWebUI-User-Role"] = user.role
+
+            data = {
+                "model": (
+                    app.state.config.MODEL
+                    if app.state.config.MODEL != ""
+                    else "dall-e-2"
+                ),
+                "prompt": form_data.prompt,
+                "n": form_data.n,
+                "size": (
+                    form_data.size if form_data.size else app.state.config.IMAGE_SIZE
+                ),
+                "response_format": "b64_json",
+            }
+
+            # Use asyncio.to_thread for the requests.post call
+            r = await asyncio.to_thread(
+                requests.post,
+                url=f"{app.state.config.OPENAI_API_BASE_URL}/images/generations",
+                json=data,
+                headers=headers,
+            )
+
+            r.raise_for_status()
+            res = r.json()
+
+            images = []
+
+            for image in res["data"]:
+                image_filename = save_b64_image(image["b64_json"])
+                images.append({"url": f"/cache/image/generations/{image_filename}"})
+                file_body_path = IMAGE_CACHE_DIR.joinpath(f"{image_filename}.json")
+
+                with open(file_body_path, "w") as f:
+                    json.dump(data, f)
+
+            return images
+
+        elif app.state.config.ENGINE == "comfyui":
+            data = {
+                "prompt": form_data.prompt,
+                "width": width,
+                "height": height,
+                "n": form_data.n,
+            }
+
+            if app.state.config.IMAGE_STEPS is not None:
+                data["steps"] = app.state.config.IMAGE_STEPS
+
+            if form_data.negative_prompt is not None:
+                data["negative_prompt"] = form_data.negative_prompt
+
+            form_data = ComfyUIGenerateImageForm(
+                **{
+                    "workflow": ComfyUIWorkflow(
+                        **{
+                            "workflow": app.state.config.COMFYUI_WORKFLOW,
+                            "nodes": app.state.config.COMFYUI_WORKFLOW_NODES,
+                        }
+                    ),
+                    **data,
+                }
+            )
+            res = await comfyui_generate_image(
+                app.state.config.MODEL,
+                form_data,
+                user.id,
+                app.state.config.COMFYUI_BASE_URL,
+            )
+            log.debug(f"res: {res}")
+
+            images = []
+
+            for image in res["data"]:
+                image_filename = save_url_image(image["url"])
+                images.append({"url": f"/cache/image/generations/{image_filename}"})
+                file_body_path = IMAGE_CACHE_DIR.joinpath(f"{image_filename}.json")
+
+                with open(file_body_path, "w") as f:
+                    json.dump(form_data.model_dump(exclude_none=True), f)
+
+            log.debug(f"images: {images}")
+            return images
+        elif (
+            app.state.config.ENGINE == "automatic1111" or app.state.config.ENGINE == ""
+        ):
+            if form_data.model:
+                set_image_model(form_data.model)
+
+            data = {
+                "prompt": form_data.prompt,
+                "batch_size": form_data.n,
+                "width": width,
+                "height": height,
+            }
+
+            if app.state.config.IMAGE_STEPS is not None:
+                data["steps"] = app.state.config.IMAGE_STEPS
+
+            if form_data.negative_prompt is not None:
+                data["negative_prompt"] = form_data.negative_prompt
+
+            if app.state.config.AUTOMATIC1111_CFG_SCALE:
+                data["cfg_scale"] = app.state.config.AUTOMATIC1111_CFG_SCALE
+
+            if app.state.config.AUTOMATIC1111_SAMPLER:
+                data["sampler_name"] = app.state.config.AUTOMATIC1111_SAMPLER
+
+            if app.state.config.AUTOMATIC1111_SCHEDULER:
+                data["scheduler"] = app.state.config.AUTOMATIC1111_SCHEDULER
+
+            # Use asyncio.to_thread for the requests.post call
+            r = await asyncio.to_thread(
+                requests.post,
+                url=f"{app.state.config.AUTOMATIC1111_BASE_URL}/sdapi/v1/txt2img",
+                json=data,
+                headers={"authorization": get_automatic1111_api_auth()},
+            )
+
+            res = r.json()
+            log.debug(f"res: {res}")
+
+            images = []
+
+            for image in res["images"]:
+                image_filename = save_b64_image(image)
+                images.append({"url": f"/cache/image/generations/{image_filename}"})
+                file_body_path = IMAGE_CACHE_DIR.joinpath(f"{image_filename}.json")
+
+                with open(file_body_path, "w") as f:
+                    json.dump({**data, "info": res["info"]}, f)
+
+            return images
+>>>>>>> upstream/main
     except Exception as e:
         log.exception(f"Image generation failed for engine '{engine}': {e}")
         raise HTTPException(status_code=500, detail=str(e))
