@@ -1,3 +1,5 @@
+# backend/open_webui/apps/images/providers/registry.py
+
 import logging
 from typing import Type, Dict, Optional, List
 from .base import BaseImageProvider
@@ -53,8 +55,6 @@ class ProviderRegistry:
         else:
             log.debug(f"Retrieved provider '{name}': {provider}")
         return provider
-
-
 
     @classmethod
     def list_providers(cls) -> List[str]:

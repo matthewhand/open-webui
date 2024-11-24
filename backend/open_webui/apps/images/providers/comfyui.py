@@ -66,14 +66,22 @@ class ComfyUIProvider(BaseImageProvider):
             log.debug("ComfyUIProvider: Required configuration is missing and provider is not available.")
 
     def validate_config(self) -> bool:
-        """
-        Validate ComfyUI-specific configuration.
-        Returns True if valid, False otherwise.
-        """
+        missing_configs = []
         if not self.base_url:
-            log.warning("ComfyUIProvider: 'COMFYUI_BASE_URL' is missing.")
+            missing_configs.append("COMFYUI_BASE_URL")
+        if not self.workflow:
+            missing_configs.append("COMFYUI_WORKFLOW")
+
+        if missing_configs:
+            log.warning(
+                f"ComfyUIProvider: Missing required configurations: {', '.join(missing_configs)}."
+            )
             return False
+
+        # Additional validation logic can be added here
         return True
+
+
 
     def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None

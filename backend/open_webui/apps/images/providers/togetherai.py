@@ -5,7 +5,11 @@ import logging
 from typing import List, Dict, Optional
 
 import httpx
-from open_webui.config import IMAGES_TOGETHERAI_BASE_URL, IMAGES_TOGETHERAI_API_KEY, AppConfig
+from open_webui.config import (
+    IMAGES_TOGETHERAI_BASE_URL,
+    IMAGES_TOGETHERAI_API_KEY,
+    AppConfig,
+)
 from .base import BaseImageProvider
 from .registry import provider_registry
 
@@ -23,8 +27,16 @@ class TogetherAIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "IMAGES_TOGETHERAI_BASE_URL", "value": getattr(self.config, "IMAGES_TOGETHERAI_BASE_URL", "").value, "required": True},
-            {"key": "IMAGES_TOGETHERAI_API_KEY", "value": getattr(self.config, "IMAGES_TOGETHERAI_API_KEY", "").value, "required": True},
+            {
+                "key": "IMAGES_TOGETHERAI_BASE_URL",
+                "value": getattr(self.config, "IMAGES_TOGETHERAI_BASE_URL", "").value,
+                "required": True,
+            },
+            {
+                "key": "IMAGES_TOGETHERAI_API_KEY",
+                "value": getattr(self.config, "IMAGES_TOGETHERAI_API_KEY", "").value,
+                "required": True,
+            },
         ]
 
         for config in config_items:
@@ -40,10 +52,32 @@ class TogetherAIProvider(BaseImageProvider):
             elif required:
                 log.debug("TogetherAIProvider: Required configuration is not set.")
 
-        if hasattr(self, 'base_url') and hasattr(self, 'api_key'):
+        if hasattr(self, "base_url") and hasattr(self, "api_key"):
             log.info(f"TogetherAIProvider available with base_url: {self.base_url}")
         else:
-            log.debug("TogetherAIProvider: Required configuration is missing and provider is not available.")
+            log.debug(
+                "TogetherAIProvider: Required configuration is missing and provider is not available."
+            )
+
+    def validate_config(self) -> bool:
+        """
+        Validate TogetherAI-specific configuration.
+        Returns True if valid, False otherwise.
+        """
+        missing_configs = []
+        if not hasattr(self, "base_url") or not self.base_url:
+            missing_configs.append("IMAGES_TOGETHERAI_BASE_URL")
+        if not hasattr(self, "api_key") or not self.api_key:
+            missing_configs.append("IMAGES_TOGETHERAI_API_KEY")
+
+        if missing_configs:
+            log.warning(
+                f"TogetherAIProvider: Missing required configurations: {', '.join(missing_configs)}."
+            )
+            return False
+
+        # Additional validation logic can be added here (e.g., URL format, API key pattern)
+        return True
 
     def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -60,9 +94,12 @@ class TogetherAIProvider(BaseImageProvider):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
-        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
-            log.error("TogetherAIProvider is not configured properly.")
-            raise Exception("TogetherAIProvider is not configured.")
+        if not self.validate_config():
+            log.error("TogetherAIProvider configuration is invalid.")
+            raise HTTPException(
+                status_code=500,
+                detail="TogetherAIProvider configuration is incomplete or invalid.",
+            )
 
         width, height = map(int, size.lower().split("x"))
         payload = {
@@ -96,25 +133,31 @@ class TogetherAIProvider(BaseImageProvider):
                 if b64_image:
                     image_filename = self.save_b64_image(b64_image)
                     if image_filename:
-                        images.append({"url": f"/cache/image/generations/{image_filename}"})
+                        images.append(
+                            {"url": f"/cache/image/generations/{image_filename}"}
+                        )
             return images
 
         except httpx.RequestError as e:
             log.error(f"TogetherAIProvider Request failed: {e}")
-            raise Exception(f"TogetherAIProvider Request failed: {e}")
+            raise HTTPException(
+                status_code=502, detail=f"TogetherAIProvider Request failed: {e}"
+            )
         except Exception as e:
             log.error(f"TogetherAIProvider Error: {e}")
-            raise Exception(f"TogetherAIProvider Error: {e}")
+            raise HTTPException(
+                status_code=500, detail=f"TogetherAIProvider Error: {e}"
+            )
 
     def list_models(self) -> List[Dict[str, str]]:
         """
-        List available models for image generation from TogetherAI's API.
+        List available models from TogetherAI's API.
 
         Returns:
             List[Dict[str, str]]: List of available models.
         """
-        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
-            log.error("TogetherAIProvider is not configured properly.")
+        if not self.validate_config():
+            log.error("TogetherAIProvider configuration is invalid.")
             return []
 
         try:
@@ -126,8 +169,13 @@ class TogetherAIProvider(BaseImageProvider):
                 )
             response.raise_for_status()
             models = response.json()
-            log.debug(f"TogetherAIProvider Models Response: {json.dumps(models, indent=2)}")
-            return [{"id": model.get("id", "unknown"), "name": model.get("name", "unknown")} for model in models]
+            log.debug(
+                f"TogetherAIProvider Models Response: {json.dumps(models, indent=2)}"
+            )
+            return [
+                {"id": model.get("id", "unknown"), "name": model.get("name", "unknown")}
+                for model in models
+            ]
         except Exception as e:
             log.error(f"Error listing TogetherAI models: {e}")
             return []
@@ -136,18 +184,25 @@ class TogetherAIProvider(BaseImageProvider):
         """
         Verify the connectivity of the TogetherAI API endpoint.
         """
-        if not hasattr(self, 'base_url') or not hasattr(self, 'api_key'):
-            log.error("TogetherAIProvider is not configured properly.")
-            raise Exception("TogetherAIProvider is not configured.")
+        if not self.validate_config():
+            log.error("TogetherAIProvider configuration is invalid.")
+            raise HTTPException(
+                status_code=400,
+                detail="TogetherAIProvider configuration is incomplete or invalid.",
+            )
 
         try:
             with httpx.Client() as client:
-                response = client.get(url=f"{self.base_url}/health", headers=self.headers, timeout=10.0)
+                response = client.get(
+                    url=f"{self.base_url}/health", headers=self.headers, timeout=10.0
+                )
             response.raise_for_status()
             log.info("TogetherAI API is reachable.")
         except Exception as e:
             log.error(f"Failed to verify TogetherAI API: {e}")
-            raise Exception(f"Failed to verify TogetherAI API: {e}")
+            raise HTTPException(
+                status_code=502, detail=f"Failed to verify TogetherAI API: {e}"
+            )
 
     def get_config(self) -> Dict[str, Optional[str]]:
         """
@@ -161,6 +216,15 @@ class TogetherAIProvider(BaseImageProvider):
             "TOGETHERAI_API_KEY": self.api_key,
         }
 
+    def is_configured(self) -> bool:
+        """
+        Check if TogetherAIProvider is properly configured.
+
+        Returns:
+            bool: True if configured, False otherwise.
+        """
+        return self.validate_config()
+
     def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
         """
         Update the shared AppConfig based on form data for TogetherAI provider.
@@ -172,16 +236,25 @@ class TogetherAIProvider(BaseImageProvider):
         log.debug("TogetherAIProvider updating configuration.")
         engine = form_data.get("engine", "").lower()
         if engine != "togetherai":
-            log.debug("TogetherAIProvider: Engine not set to 'togetherai'; skipping config update.")
+            log.debug(
+                "TogetherAIProvider: Engine not set to 'togetherai'; skipping config update."
+            )
             return
 
-        # TogetherAI does not have a model in the ConfigForm, but can update image_size and image_steps
+        # TogetherAI may not have models to set via the provider, but can update image_size and image_steps
         if form_data.get("image_size"):
             app_config.IMAGE_SIZE.value = form_data["image_size"]
             # app_config.IMAGE_SIZE.save()
-            log.debug(f"TogetherAIProvider: IMAGE_SIZE updated to {form_data['image_size']}")
+            log.debug(
+                f"TogetherAIProvider: IMAGE_SIZE updated to {form_data['image_size']}"
+            )
 
         if form_data.get("image_steps") is not None:
             app_config.IMAGE_STEPS.value = form_data["image_steps"]
             # app_config.IMAGE_STEPS.save()
-            log.debug(f"TogetherAIProvider: IMAGE_STEPS updated to {form_data['image_steps']}")
+            log.debug(
+                f"TogetherAIProvider: IMAGE_STEPS updated to {form_data['image_steps']}"
+            )
+
+        # Optionally, update other TogetherAI-specific configurations here
+        # For example, if you have model settings or other parameters

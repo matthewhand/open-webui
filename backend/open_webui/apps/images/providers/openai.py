@@ -11,7 +11,6 @@ from open_webui.config import AppConfig, IMAGES_OPENAI_API_BASE_URL, IMAGES_OPEN
 
 log = logging.getLogger(__name__)
 
-
 class OpenAIProvider(BaseImageProvider):
     """
     Provider for OpenAI's DALL·E image generation API.
@@ -23,8 +22,8 @@ class OpenAIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "OPENAI_API_BASE_URL", "value": IMAGES_OPENAI_API_BASE_URL.value or "", "required": True},
-            {"key": "OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value or "", "required": True},
+            {"key": "IMAGES_OPENAI_API_BASE_URL", "value": IMAGES_OPENAI_API_BASE_URL.value or "", "required": True},
+            {"key": "IMAGES_OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value or "", "required": True},
         ]
 
         for config in config_items:
@@ -53,16 +52,19 @@ class OpenAIProvider(BaseImageProvider):
             log.debug("OpenAIProvider: Required configuration is missing and provider is not available.")
 
     def validate_config(self) -> bool:
-        """
-        Validate OpenAI-specific configuration.
-        Returns True if valid, False otherwise.
-        """
+        missing_configs = []
         if not self.base_url:
-            log.warning("OpenAIProvider: 'IMAGES_OPENAI_API_BASE_URL' is missing.")
-            return False
+            missing_configs.append("OPENAI_API_BASE_URL")
         if not self.api_key:
-            log.warning("OpenAIProvider: 'IMAGES_OPENAI_API_KEY' is missing.")
+            missing_configs.append("OPENAI_API_KEY")
+
+        if missing_configs:
+            log.warning(
+                f"OpenAIProvider: Missing required configurations: {', '.join(missing_configs)}."
+            )
             return False
+
+        # Additional validation logic can be added here (e.g., URL format, API key pattern)
         return True
 
     def generate_image(
