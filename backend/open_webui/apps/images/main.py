@@ -20,8 +20,8 @@ from open_webui.config import (
 from open_webui.env import ENV, SRC_LOG_LEVELS
 from open_webui.utils.utils import get_admin_user, get_verified_user
 
-from .registry import engine_registry
-from .base import BaseImageEngine
+from .engines.registry import engine_registry
+from .engines.base import BaseImageEngine
 
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["IMAGES"])
@@ -72,6 +72,12 @@ app.state.config.IMAGE_STEPS = IMAGE_STEPS
 
 # Dynamically instantiate engines from the registry
 ENGINES: Dict[str, BaseImageEngine] = {}
+
+def construct_headers(engine_instance: BaseImageEngine) -> Dict[str, str]:
+    """
+    Helper method to construct headers for API requests.
+    """
+    return engine_instance._construct_headers()
 
 # Load and validate engines
 try:
@@ -131,7 +137,7 @@ enforce_default_engine()
 
 @app.exception_handler(RequestValidationError)
 def validation_exception_handler(request: Request, exc: RequestValidationError):
-    log.error(f"Validation error for request {request.method} {request.url}: {exc}")
+    log.warning(f"Validation error for request {request.method} {request.url}: {exc}")
     return JSONResponse(
         status_code=422,
         content={
@@ -140,29 +146,6 @@ def validation_exception_handler(request: Request, exc: RequestValidationError):
             "body": exc.body,
         },
     )
-
-# # Middleware to log incoming requests
-# @app.middleware("http")
-# async def log_requests(request: Request, call_next):
-#     log.debug(f"Incoming request: {request.method} {request.url}")
-
-#     try:
-#         # Debug request body
-#         body = await request.body()
-#         if body:
-#             log.debug(f"Request body: {body.decode('utf-8')}")
-#         else:
-#             log.debug("Request body is empty.")
-#     except Exception as e:
-#         log.warning(f"Failed to read request body: {e}")
-
-#     try:
-#         response = await call_next(request)
-#         log.debug(f"Response status: {response.status_code}")
-#         return response
-#     except Exception as e:
-#         log.error(f"Middleware error: {e}")
-#         raise e
 
 # Utility function to fetch and sanitize engine configurations
 def get_populated_configs(engines: Dict[str, BaseImageEngine]) -> Dict[str, Dict[str, Any]]:
@@ -238,8 +221,10 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
 
         # Validate the active engine's configuration
         warnings = []
-        if active_engine and not active_engine.validate_config():
-            warnings.append(f"Engine '{app.state.config.ENGINE}' is not fully configured. Please complete its configuration.")
+        if active_engine:
+            is_valid, missing_fields = active_engine.validate_config()
+            if not is_valid:
+                warnings.append(f"Engine '{app.state.config.ENGINE}' is not fully configured. Missing: {', '.join(missing_fields)}.")
 
         # Return a complete response with warnings
         combined_config = {
@@ -281,7 +266,7 @@ def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)
 
         # Update MODEL
         if "model" in data and data["model"]:
-            log.debug(f"Setting MODEL to {data['model']}")
+            log.debug(f"Setting MODEL to '{data['model']}'")
             set_image_model(data["model"])
 
         # Update IMAGE_SIZE
@@ -289,7 +274,7 @@ def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)
             size_pattern = r"^\d+x\d+$"
             if re.match(size_pattern, data["image_size"]):
                 app.state.config.IMAGE_SIZE = data["image_size"]
-                log.debug(f"Set IMAGE_SIZE to {data['image_size']}")
+                log.debug(f"Set IMAGE_SIZE to '{data['image_size']}'")
             else:
                 log.error("Invalid IMAGE_SIZE format received.")
                 raise HTTPException(
@@ -311,12 +296,19 @@ def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)
 
         # After updating configurations, validate the active engine's configuration
         engine = getattr(app.state.config, "ENGINE", "").lower()
-        engine: Optional[BaseImageEngine] = ENGINES.get(engine)
-        if not engine or not engine.validate_config():
-            log.error(f"Validation failed for engine '{engine}'. Please check the configuration.")
+        engine_instance: Optional[BaseImageEngine] = ENGINES.get(engine)
+        if not engine_instance:
+            log.error(f"Engine '{engine}' is not supported.")
             raise HTTPException(
                 status_code=400,
-                detail=f"Validation failed for engine '{engine}'. Please check the configuration."
+                detail=f"Engine '{engine}' is not supported."
+            )
+        is_valid, missing_fields = engine_instance.validate_config()
+        if not is_valid:
+            log.error(f"Validation failed for engine '{engine}'. Missing: {', '.join(missing_fields)}.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Validation failed for engine '{engine}'. Missing: {', '.join(missing_fields)}."
             )
 
         log.info("Image configuration updated successfully via /image/config/update endpoint.")
@@ -338,33 +330,24 @@ def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)
 
 @app.get("/config/url/verify")
 def verify_url(user=Depends(get_admin_user)):
-    """
-    Verify the connectivity of the configured engine's endpoint.
-    """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
+    engine_instance = ENGINES.get(engine)
 
-    log.debug(f"Verifying URL for engine '{engine}'")
+    if not engine_instance:
+        log.warning(f"Engine '{engine}' not found.")
+        return {"message": f"Engine '{engine}' is not supported."}
 
-    if not engine:
-        log.error(f"Engine '{engine}' is not supported.")
-        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not supported.")
-
-    # Check if engine is configured
-    if not engine.is_configured():
-        log.error(f"Engine '{engine}' is not properly configured.")
-        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
+    if not engine_instance.is_configured():
+        log.warning(f"Engine '{engine}' is not properly configured.")
+        return {"message": f"Engine '{engine}' is not configured."}
 
     try:
-        engine.verify_url()  # Call engine-specific verification
+        engine_instance.verify_url()
         log.info(f"Engine '{engine}' verified successfully.")
         return {"message": f"Engine '{engine}' verified successfully."}
-    except HTTPException as e:
-        # Re-raise HTTPExceptions from engine.verify_url()
-        raise e
     except Exception as e:
-        log.exception(f"URL verification failed for engine '{engine}': {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        log.warning(f"Failed to verify engine '{engine}': {e}")
+        return {"message": f"Engine '{engine}' is unavailable. Connectivity check failed."}
 
 @app.get("/models")
 def get_models(user=Depends(get_verified_user)):
@@ -372,11 +355,12 @@ def get_models(user=Depends(get_verified_user)):
     Retrieve models available in the selected engine.
     """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
+    engine_instance: Optional[BaseImageEngine] = ENGINES.get(engine)
 
     log.debug(f"Fetching available models for engine '{engine}'")
 
-    if not engine:
+    if not engine_instance:
+        log.error(f"Engine '{engine}' is not supported.")
         return {
             "status": "error",
             "message": f"Engine '{engine}' is not supported. Please choose a valid engine.",
@@ -384,8 +368,9 @@ def get_models(user=Depends(get_verified_user)):
         }
 
     # Validate configuration
-    valid, missing_fields = engine.validate_config()
-    if not valid:
+    is_valid, missing_fields = engine_instance.validate_config()
+    if not is_valid:
+        log.warning(f"Engine '{engine}' is not fully configured. Missing: {', '.join(missing_fields)}.")
         return {
             "status": "warning",
             "message": f"Engine '{engine}' is not fully configured. Missing: {', '.join(missing_fields)}",
@@ -393,7 +378,7 @@ def get_models(user=Depends(get_verified_user)):
         }
 
     try:
-        models = engine.list_models()
+        models = engine_instance.list_models()
         return {"status": "ok", "models": models}
     except Exception as e:
         log.exception(f"Failed to retrieve models for engine '{engine}': {e}")
@@ -409,16 +394,16 @@ def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user
     Generate images using the selected engine.
     """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
+    engine_instance: Optional[BaseImageEngine] = ENGINES.get(engine)
 
     log.debug(f"Generating images using engine '{engine}' with data: {form_data.dict()}")
 
-    if not engine:
+    if not engine_instance:
         log.error(f"Engine '{engine}' is not supported.")
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not supported.")
 
     # Check if engine is configured
-    if not engine.is_configured():
+    if not engine_instance.is_configured():
         log.error(f"Engine '{engine}' is not properly configured.")
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
 
@@ -426,7 +411,7 @@ def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user
     log.debug(f"Using image size: '{size}'")
 
     try:
-        images = engine.generate_image(
+        images = engine_instance.generate_image(
             prompt=form_data.prompt,
             n=form_data.n,
             size=size,
@@ -448,7 +433,7 @@ def get_image_config(user=Depends(get_admin_user)):
         image_steps = getattr(app.state.config, "IMAGE_STEPS", "")
 
         image_config = {
-            "MODEL": getattr(app.state.config, "MODEL", ""),
+            "MODEL": model,
             "IMAGE_SIZE": image_size if image_size else "",
             "IMAGE_STEPS": image_steps if image_steps else "",
         }
@@ -466,25 +451,25 @@ def set_image_model(model: str):
     Set the current image model for the selected engine.
     """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
+    engine_instance: Optional[BaseImageEngine] = ENGINES.get(engine)
 
     log.debug(f"Setting image model to '{model}' for engine '{engine}'")
 
-    if not engine:
+    if not engine_instance:
         log.error(f"Engine '{engine}' is not supported.")
-        raise ValueError(f"Engine '{engine}' is not supported.")
+        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not supported.")
 
     # Assuming engines have a `set_model` method
-    if hasattr(engine, 'set_model'):
+    if hasattr(engine_instance, 'set_model'):
         try:
-            engine.set_model(model)
+            engine_instance.set_model(model)
             log.debug(f"Model set to '{model}' successfully for engine '{engine}'")
         except Exception as e:
             log.error(f"Failed to set model for engine '{engine}': {e}")
-            raise ValueError(f"Failed to set model for engine '{engine}': {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to set model for engine '{engine}': {e}")
     else:
         log.warning(f"Engine '{engine}' does not implement set_model method.")
-        raise ValueError(f"Engine '{engine}' does not support model updates.")
+        raise HTTPException(status_code=400, detail=f"Engine '{engine}' does not support model updates.")
 
     # Update the configuration directly
     app.state.config.MODEL = model
@@ -495,23 +480,23 @@ def get_image_model():
     Get the current image model for the selected engine.
     """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
+    engine_instance: Optional[BaseImageEngine] = ENGINES.get(engine)
 
     log.debug(f"Retrieving current image model for engine '{engine}'")
 
-    if not engine:
+    if not engine_instance:
         log.error(f"Engine '{engine}' is not supported.")
-        raise ValueError(f"Engine '{engine}' is not supported.")
+        raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not supported.")
 
     # Assuming engines have a `get_model` method
-    if hasattr(engine, 'get_model'):
+    if hasattr(engine_instance, 'get_model'):
         try:
-            model = engine.get_model()
+            model = engine_instance.get_model()
             log.debug(f"Current model for engine '{engine}': '{model}'")
             return model
         except Exception as e:
             log.error(f"Failed to get model for engine '{engine}': {e}")
-            raise ValueError(f"Failed to get model for engine '{engine}': {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to get model for engine '{engine}': {e}")
     else:
         log.warning(f"Engine '{engine}' does not implement get_model method.")
         return getattr(app.state.config, "MODEL", "")

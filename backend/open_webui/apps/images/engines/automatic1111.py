@@ -1,11 +1,9 @@
-# backend/open_webui/apps/images/engines/automatic1111.py
-
 import json
 import logging
 from typing import List, Dict, Optional
 
 import httpx
-from open_webui.apps.images.base import BaseImageEngine
+from .base import BaseImageEngine
 from open_webui.config import (
     AUTOMATIC1111_BASE_URL,
     AUTOMATIC1111_API_AUTH,
@@ -17,7 +15,6 @@ from open_webui.config import (
 
 log = logging.getLogger(__name__)
 
-
 class Automatic1111Engine(BaseImageEngine):
     """
     Engine for AUTOMATIC1111-based image generation.
@@ -28,16 +25,16 @@ class Automatic1111Engine(BaseImageEngine):
         Populate the shared configuration with AUTOMATIC1111-specific details.
         Logs info when required config is available and sets defaults for missing optional fields.
         """
-
         log.debug("Executing Automatic1111Engine populate_config...")
         config_items = [
-            {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value or "http://host.docker.internal:7860/", "required": True},
+            {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value or "http://host.docker.internal:7860", "required": True},
             {"key": "AUTOMATIC1111_API_AUTH", "value": AUTOMATIC1111_API_AUTH.value or "", "required": False},
             {"key": "AUTOMATIC1111_CFG_SCALE", "value": AUTOMATIC1111_CFG_SCALE.value or 7.5, "required": False},
             {"key": "AUTOMATIC1111_SAMPLER", "value": AUTOMATIC1111_SAMPLER.value or "Euler", "required": False},
             {"key": "AUTOMATIC1111_SCHEDULER", "value": AUTOMATIC1111_SCHEDULER.value or "normal", "required": False},
         ]
 
+        missing_fields = []
         for config in config_items:
             key = config["key"]
             value = config["value"]
@@ -55,6 +52,7 @@ class Automatic1111Engine(BaseImageEngine):
                 elif key == "AUTOMATIC1111_SCHEDULER":
                     self.scheduler = value
             elif required:
+                missing_fields.append(key)
                 log.debug(f"Automatic1111Engine: Missing required configuration '{key}'.")
 
         # Ensure all required and optional fields are set
@@ -106,13 +104,13 @@ class Automatic1111Engine(BaseImageEngine):
         """
         if not self.base_url:
             log.error("Automatic1111Engine is not configured properly.")
-            raise Exception("Automatic1111Engine is not configured.")
+            return []
 
         try:
             width, height = map(int, size.lower().split("x"))
         except ValueError:
             log.error("Invalid size format. Use 'WIDTHxHEIGHT' (e.g., '512x512').")
-            raise Exception("Invalid size format. Use 'WIDTHxHEIGHT' (e.g., '512x512').")
+            return []
 
         payload = {
             "prompt": prompt,
@@ -129,17 +127,14 @@ class Automatic1111Engine(BaseImageEngine):
 
         log.debug(f"Automatic1111Engine Payload: {payload}")
 
-        headers = {}
-        if self.api_key:
-            headers["Authorization"] = self.api_key  # Adjust if the auth scheme differs
+        headers = self._construct_headers()
 
         try:
-            with httpx.Client() as client:
+            with httpx.Client(timeout=30.0) as client:
                 response = client.post(
                     url=f"{self.base_url}/sdapi/v1/txt2img",
                     headers=headers,
                     json=payload,
-                    timeout=120.0,
                 )
             log.debug(f"Automatic1111Engine Response Status: {response.status_code}")
             response.raise_for_status()
@@ -153,12 +148,12 @@ class Automatic1111Engine(BaseImageEngine):
                     images.append({"url": f"/cache/image/generations/{image_filename}"})
             return images
 
-        except httpx.RequestError as e:
-            log.error(f"Automatic1111Engine Request failed: {e}")
-            raise Exception(f"Automatic1111Engine Request failed: {e}")
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"Automatic1111Engine Request failed: {e}")
+            return []
         except Exception as e:
             log.error(f"Automatic1111Engine Error: {e}")
-            raise Exception(f"Automatic1111Engine Error: {e}")
+            return []
 
     def list_models(self) -> List[Dict[str, str]]:
         """
@@ -172,15 +167,11 @@ class Automatic1111Engine(BaseImageEngine):
             return []
 
         try:
-            headers = {}
-            if self.api_key:
-                headers["Authorization"] = self.api_key
-
-            with httpx.Client() as client:
+            headers = self._construct_headers()
+            with httpx.Client(timeout=10.0) as client:
                 response = client.get(
                     url=f"{self.base_url}/sdapi/v1/sd-models",
                     headers=headers,
-                    timeout=30.0,
                 )
             response.raise_for_status()
             models = response.json()
@@ -189,8 +180,11 @@ class Automatic1111Engine(BaseImageEngine):
                 {"id": model.get("title", "unknown"), "name": model.get("model_name", "unknown")}
                 for model in models
             ]
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"Error listing AUTOMATIC1111 models: {e}")
+            return []
         except Exception as e:
-            log.error(f"Error listing AUTOMATIC1111 models: {e}")
+            log.error(f"Automatic1111Engine Error during model listing: {e}")
             return []
 
     def verify_url(self):
@@ -199,25 +193,26 @@ class Automatic1111Engine(BaseImageEngine):
         """
         if not self.base_url:
             log.error("Automatic1111Engine is not configured properly.")
-            raise Exception("Automatic1111Engine is not configured.")
+            return {"status": "error", "message": "Automatic1111Engine is not configured."}
 
-        headers = {}
-        if self.api_key:
-            headers["Authorization"] = self.api_key
+        headers = self._construct_headers()
 
         try:
-            with httpx.Client() as client:
+            with httpx.Client(timeout=10.0) as client:
                 response = client.get(
                     url=f"{self.base_url}/sdapi/v1/status",
                     headers=headers,
-                    timeout=10.0,
                 )
             response.raise_for_status()
             status = response.json()
             log.info(f"AUTOMATIC1111 API Status: {status}")
+            return {"status": "ok", "message": "Automatic1111 API is reachable."}
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"Could not reach AUTOMATIC1111 API at {self.base_url}: {e}")
+            return {"status": "error", "message": f"AUTOMATIC1111 API is unavailable: {e}"}
         except Exception as e:
-            log.error(f"Failed to verify AUTOMATIC1111 API: {e}")
-            raise Exception(f"Failed to verify AUTOMATIC1111 API: {e}")
+            log.error(f"Unexpected error verifying AUTOMATIC1111 API: {e}")
+            return {"status": "error", "message": "Unexpected error during API verification."}
 
     def set_model(self, model: str):
         """
@@ -225,21 +220,15 @@ class Automatic1111Engine(BaseImageEngine):
 
         Args:
             model (str): The model name to set.
-
-        Raises:
-            Exception: If setting the model fails.
         """
         try:
-            headers = {}
-            if self.api_key:
-                headers["Authorization"] = self.api_key
+            headers = self._construct_headers()
 
             # Get current options
-            with httpx.Client() as client:
+            with httpx.Client(timeout=10.0) as client:
                 response = client.get(
                     url=f"{self.base_url}/sdapi/v1/options",
                     headers=headers,
-                    timeout=30.0,
                 )
             response.raise_for_status()
             options = response.json()
@@ -249,20 +238,20 @@ class Automatic1111Engine(BaseImageEngine):
                 options["sd_model_checkpoint"] = model
 
                 # Set the updated options
-                with httpx.Client() as client:
+                with httpx.Client(timeout=10.0) as client:
                     set_response = client.post(
                         url=f"{self.base_url}/sdapi/v1/options",
                         headers=headers,
                         json=options,
-                        timeout=30.0,
                     )
                 set_response.raise_for_status()
                 log.info(f"Model set to '{model}' successfully.")
             else:
                 log.info(f"Model '{model}' is already set.")
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"Failed to set model '{model}': {e}")
         except Exception as e:
-            log.error(f"Failed to set model '{model}': {e}")
-            raise Exception(f"Failed to set model '{model}': {e}")
+            log.error(f"Automatic1111Engine Error during set_model: {e}")
 
     def get_model(self) -> str:
         """
@@ -272,27 +261,27 @@ class Automatic1111Engine(BaseImageEngine):
             str: Currently selected model.
         """
         if not self.base_url:
-            raise Exception("Automatic1111Engine is not configured.")
+            log.error("Automatic1111Engine is not configured properly.")
+            return ""
 
         try:
-            headers = {}
-            if self.api_key:
-                headers["Authorization"] = self.api_key
-
-            with httpx.Client() as client:
+            headers = self._construct_headers()
+            with httpx.Client(timeout=10.0) as client:
                 response = client.get(
                     url=f"{self.base_url}/sdapi/v1/options",
                     headers=headers,
-                    timeout=30.0,
                 )
             response.raise_for_status()
             options = response.json()
             current_model = options.get("sd_model_checkpoint", "")
             log.info(f"Current AUTOMATIC1111 model: '{current_model}'")
             return current_model
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"Failed to get current model: {e}")
+            return ""
         except Exception as e:
-            log.error(f"Failed to get current model: {e}")
-            raise Exception(f"Failed to get current model: {e}")
+            log.error(f"Automatic1111Engine Error during get_model: {e}")
+            return ""
 
     def get_config(self) -> Dict[str, Optional[str]]:
         """
@@ -321,7 +310,7 @@ class Automatic1111Engine(BaseImageEngine):
             app_config (AppConfig): The shared configuration object.
         """
         log.debug("Automatic1111Engine updating configuration.")
-        
+
         # Fallback to AppConfig.ENGINE if "engine" is not in form_data
         engine = form_data.get("engine", "").lower()
         current_engine = getattr(app_config, "ENGINE", "").lower()
@@ -352,5 +341,5 @@ class Automatic1111Engine(BaseImageEngine):
 
         # Update optional API authentication
         if form_data.get("AUTOMATIC1111_API_AUTH"):
-            self.api_auth = form_data["AUTOMATIC1111_API_AUTH"]
+            self.api_key = form_data["AUTOMATIC1111_API_AUTH"]
             log.debug("Automatic1111Engine: API authentication updated.")

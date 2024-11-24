@@ -1,11 +1,9 @@
-# backend/open_webui/apps/images/engines/openai.py
-
 import logging
 import httpx
 from typing import List, Dict, Optional
 
 from fastapi import HTTPException
-from open_webui.apps.images.base import BaseImageEngine
+from .base import BaseImageEngine
 from open_webui.config import AppConfig, IMAGES_OPENAI_API_BASE_URL, IMAGES_OPENAI_API_KEY
 
 log = logging.getLogger(__name__)
@@ -25,6 +23,7 @@ class OpenAIEngine(BaseImageEngine):
             {"key": "IMAGES_OPENAI_API_KEY", "value": IMAGES_OPENAI_API_KEY.value or "", "required": True},
         ]
 
+        missing_fields = []
         for config in config_items:
             key = config["key"]
             value = config["value"]
@@ -36,6 +35,7 @@ class OpenAIEngine(BaseImageEngine):
                 elif key == "IMAGES_OPENAI_API_KEY":
                     self.api_key = value
             elif required:
+                missing_fields.append(key)
                 log.warning(f"OpenAIEngine: Missing required configuration '{key}'.")
 
         # Ensure all required attributes are set
@@ -59,7 +59,7 @@ class OpenAIEngine(BaseImageEngine):
         """
         missing_configs = []
         if not self.base_url:
-            missing_configs.append("OPENAI_API_BASE_URL")
+            missing_configs.append("IMAGES_OPENAI_API_BASE_URL")
         if not self.api_key:
             log.warning("OpenAIEngine: API key is missing. Limited functionality may be available.")
 
@@ -87,35 +87,32 @@ class OpenAIEngine(BaseImageEngine):
         Returns:
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
-        if not self.validate_config():
+        is_valid, missing_fields = self.validate_config()
+        if not is_valid:
             log.error("OpenAIEngine is not configured properly.")
-            raise HTTPException(status_code=500, detail="OpenAIEngine configuration is incomplete.")
-
-        payload = {
-            "model": self.get_model(),
-            "prompt": prompt,
-            "n": n,
-            "size": size,
-            "response_format": "b64_json",
-        }
-
-        if negative_prompt:
-            payload["negative_prompt"] = negative_prompt  # OpenAI may support this in the future
-
-        log.debug(f"OpenAIEngine Payload: {payload}")
-
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+            return []
 
         try:
-            with httpx.Client() as client:
+            payload = {
+                "model": self.get_model(),
+                "prompt": prompt,
+                "n": n,
+                "size": size,
+                "response_format": "b64_json",
+            }
+
+            if negative_prompt:
+                payload["negative_prompt"] = negative_prompt  # OpenAI may support this in the future
+
+            log.debug(f"OpenAIEngine Payload: {payload}")
+
+            headers = self._construct_headers()
+
+            with httpx.Client(timeout=30.0) as client:
                 response = client.post(
                     url=f"{self.base_url}/images/generations",
                     headers=headers,
                     json=payload,
-                    timeout=120.0,
                 )
             log.debug(f"OpenAIEngine Response Status: {response.status_code}")
             response.raise_for_status()
@@ -132,12 +129,12 @@ class OpenAIEngine(BaseImageEngine):
                         images.append({"url": f"/cache/image/generations/{image_filename}"})
             return images
 
-        except httpx.RequestError as e:
-            log.error(f"OpenAIEngine Request failed: {e}")
-            raise HTTPException(status_code=502, detail=f"OpenAIEngine Request failed: {e}")
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"OpenAIEngine Request failed: {e}")
+            return []
         except Exception as e:
             log.error(f"OpenAIEngine Error: {e}")
-            raise HTTPException(status_code=500, detail=f"OpenAIEngine Error: {e}")
+            return []
 
     def list_models(self) -> List[Dict[str, str]]:
         """
@@ -146,6 +143,7 @@ class OpenAIEngine(BaseImageEngine):
         Returns:
             List[Dict[str, str]]: List of available models.
         """
+        # OpenAI has predefined models; no need to fetch from API
         models = [
             {"id": "dall-e-2", "name": "DALL·E 2"},
             {"id": "dall-e-3", "name": "DALL·E 3"},
@@ -157,27 +155,28 @@ class OpenAIEngine(BaseImageEngine):
         """
         Verify the connectivity of OpenAI's API endpoint.
         """
-        log.debug("Verifying OpenAI API connectivity.")
+        if not self.base_url or not self.api_key:
+            log.error("OpenAIEngine is not configured properly.")
+            return {"status": "error", "message": "OpenAIEngine is not configured."}
+
+        headers = self._construct_headers()
+
         try:
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json",
-            }
-            with httpx.Client() as client:
+            with httpx.Client(timeout=10.0) as client:
                 response = client.get(
                     url=f"{self.base_url}/models",
                     headers=headers,
-                    timeout=10.0,
                 )
             response.raise_for_status()
             models = response.json()
             log.info(f"OpenAI API is reachable. Retrieved models: {models}")
-        except httpx.RequestError as e:
-            log.error(f"Failed to verify OpenAI API: {e}")
-            raise HTTPException(status_code=502, detail=f"Failed to verify OpenAI API: {e}")
+            return {"status": "ok", "message": "OpenAI API is reachable."}
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"Failed to verify OpenAI API: {e}")
+            return {"status": "error", "message": f"Failed to verify OpenAI API: {e}"}
         except Exception as e:
             log.error(f"OpenAIEngine Error during URL verification: {e}")
-            raise HTTPException(status_code=500, detail=f"OpenAIEngine Error during URL verification: {e}")
+            return {"status": "error", "message": "Unexpected error during API verification."}
 
     def set_model(self, model: str):
         """
@@ -187,7 +186,9 @@ class OpenAIEngine(BaseImageEngine):
             model (str): Model ID (e.g., 'dall-e-2' or 'dall-e-3').
         """
         if model not in ["dall-e-2", "dall-e-3"]:
-            raise ValueError(f"Model '{model}' is not supported by OpenAIEngine.")
+            log.error(f"Model '{model}' is not supported by OpenAIEngine.")
+            return
+
         self.current_model = model
         log.info(f"OpenAIEngine model set to: {self.current_model}")
 
@@ -207,6 +208,12 @@ class OpenAIEngine(BaseImageEngine):
         return getattr(self, "current_model", "dall-e-2")
 
     def get_config(self) -> Dict[str, Optional[str]]:
+        """
+        Retrieve OpenAI-specific configuration details.
+
+        Returns:
+            Dict[str, Optional[str]]: OpenAI configuration details.
+        """
         try:
             config = {
                 "OPENAI_API_BASE_URL": self.base_url,
@@ -234,7 +241,7 @@ class OpenAIEngine(BaseImageEngine):
             app_config (AppConfig): The shared configuration object.
         """
         log.debug("OpenAIEngine updating configuration.")
-        
+
         # Fallback to AppConfig.ENGINE if "engine" is not in form_data
         engine = form_data.get("engine", "").lower()
         current_engine = getattr(app_config, "ENGINE", "").lower()
@@ -259,9 +266,9 @@ class OpenAIEngine(BaseImageEngine):
             log.debug(f"OpenAIEngine: IMAGE_STEPS updated to {form_data['image_steps']}")
 
         # Additional OpenAI-specific configurations (if any)
-        if form_data.get("api_key"):
-            self.api_key = form_data["api_key"]
+        if form_data.get("IMAGES_OPENAI_API_KEY"):
+            self.api_key = form_data["IMAGES_OPENAI_API_KEY"]
             log.debug("OpenAIEngine: API key updated.")
-        if form_data.get("base_url"):
-            self.base_url = form_data["base_url"]
-            log.debug(f"OpenAIEngine: Base URL updated to {form_data['base_url']}")
+        if form_data.get("IMAGES_OPENAI_API_BASE_URL"):
+            self.base_url = form_data["IMAGES_OPENAI_API_BASE_URL"]
+            log.debug(f"OpenAIEngine: Base URL updated to {form_data['IMAGES_OPENAI_API_BASE_URL']}")

@@ -1,9 +1,6 @@
 import logging
 from typing import Type, Dict, Optional, List
 from .base import BaseImageEngine
-import open_webui.apps.images.engines
-
-_ = open_webui.apps.images.engines.__all__  # Importing the engines package to trigger their registration
 
 log = logging.getLogger(__name__)
 

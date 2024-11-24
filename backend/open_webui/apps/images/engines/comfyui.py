@@ -1,5 +1,3 @@
-# backend/open_webui/apps/images/engines/comfyui.py
-
 import json
 import logging
 import random
@@ -9,10 +7,9 @@ from typing import List, Dict, Optional
 import httpx
 import websocket
 from open_webui.config import COMFYUI_BASE_URL, COMFYUI_WORKFLOW, COMFYUI_WORKFLOW_NODES, AppConfig
-from open_webui.apps.images.base import BaseImageEngine
+from .base import BaseImageEngine
 
 log = logging.getLogger(__name__)
-
 
 class ComfyUIEngine(BaseImageEngine):
     """
@@ -25,11 +22,12 @@ class ComfyUIEngine(BaseImageEngine):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value or "http://host.docker.internal:8188/", "required": True},
+            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value or "http://host.docker.internal:8188", "required": True},
             {"key": "COMFYUI_WORKFLOW", "value": COMFYUI_WORKFLOW.value or "{}", "required": False},
             {"key": "COMFYUI_WORKFLOW_NODES", "value": COMFYUI_WORKFLOW_NODES.value or "[]", "required": False},
         ]
 
+        missing_fields = []
         for config in config_items:
             key = config["key"]
             value = config["value"]
@@ -43,15 +41,18 @@ class ComfyUIEngine(BaseImageEngine):
                         workflow = json.loads(value) if isinstance(value, str) else value
                         self.workflow = json.dumps(workflow, indent=2)  # Escaped string representation
                     except json.JSONDecodeError as e:
+                        missing_fields.append(key)
                         log.warning(f"Failed to parse {key}: {e}. Defaulting to empty dict.")
                         self.workflow = "{}"
                 elif key == "COMFYUI_WORKFLOW_NODES":
                     try:
                         self.workflow_nodes = json.loads(value)
                     except json.JSONDecodeError as e:
+                        missing_fields.append(key)
                         log.warning(f"Failed to parse {key}: {e}. Defaulting to empty list.")
                         self.workflow_nodes = []
             elif required:
+                missing_fields.append(key)
                 log.debug(f"ComfyUIEngine: Required configuration '{key}' is not set.")
 
         # Ensure defaults
@@ -103,13 +104,13 @@ class ComfyUIEngine(BaseImageEngine):
         """
         if not self.base_url:
             log.error("ComfyUIEngine is not configured properly.")
-            raise Exception("ComfyUIEngine is not configured.")
+            return []
 
         try:
             width, height = map(int, size.lower().split("x"))
         except ValueError:
             log.error("Invalid size format. Use 'WIDTHxHEIGHT' (e.g., '512x512').")
-            raise Exception("Invalid size format. Use 'WIDTHxHEIGHT' (e.g., '512x512').")
+            return []
 
         updated_workflow = self._update_workflow(
             prompt=prompt, n=n, width=width, height=height, negative_prompt=negative_prompt
@@ -122,8 +123,8 @@ class ComfyUIEngine(BaseImageEngine):
             images = self._comfyui_generate_image(client_id=client_id, workflow=updated_workflow)
             return images.get("data", [])
         except Exception as e:
-            log.exception(f"ComfyUIEngine Error during image generation: {e}")
-            raise Exception(f"ComfyUIEngine Error: {e}")
+            log.error(f"ComfyUIEngine Error during image generation: {e}")
+            return []
 
     def list_models(self) -> List[Dict[str, str]]:
         """
@@ -136,19 +137,17 @@ class ComfyUIEngine(BaseImageEngine):
             log.error("ComfyUIEngine is not configured properly.")
             return []
 
-        headers = self.headers  # Utilize headers from BaseImageEngine
-
         try:
-            with httpx.Client() as client:
+            headers = self._construct_headers()
+            with httpx.Client(timeout=10.0) as client:
                 response = client.get(
                     url=f"{self.base_url}/object_info",
                     headers=headers,
-                    timeout=30.0,
                 )
             response.raise_for_status()
             info = response.json()
 
-            workflow = self.workflow
+            workflow = json.loads(self.workflow)
             model_node_id = self._get_model_node_id()
             if not model_node_id:
                 log.warning("No model node found in ComfyUI workflow configuration.")
@@ -176,8 +175,11 @@ class ComfyUIEngine(BaseImageEngine):
 
             models = info.get(node_class_type, {}).get("input", {}).get("required", {}).get(model_list_key, [])
             return [{"id": model, "name": model} for model in models]
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"Error listing ComfyUI models: {e}")
+            return []
         except Exception as e:
-            log.error(f"Error listing ComfyUI models: {e}")
+            log.error(f"ComfyUIEngine Error during model listing: {e}")
             return []
 
     def verify_url(self):
@@ -186,23 +188,26 @@ class ComfyUIEngine(BaseImageEngine):
         """
         if not self.base_url:
             log.error("ComfyUIEngine is not configured properly.")
-            raise Exception("ComfyUIEngine is not configured.")
+            return {"status": "error", "message": "ComfyUIEngine is not configured."}
 
-        headers = self.headers  # Utilize headers from BaseImageEngine
+        headers = self._construct_headers()
 
         try:
-            with httpx.Client() as client:
+            with httpx.Client(timeout=10.0) as client:
                 response = client.get(
                     url=f"{self.base_url}/object_info",
                     headers=headers,
-                    timeout=10.0,
                 )
             response.raise_for_status()
             info = response.json()
             log.info(f"ComfyUI API is reachable. Retrieved object info: {info}")
+            return {"status": "ok", "message": "ComfyUI API is reachable."}
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"Failed to verify ComfyUI API: {e}")
+            return {"status": "error", "message": f"Failed to verify ComfyUI API: {e}"}
         except Exception as e:
-            log.error(f"Failed to verify ComfyUI API: {e}")
-            raise Exception(f"Failed to verify ComfyUI API: {e}")
+            log.error(f"ComfyUIEngine Error during URL verification: {e}")
+            return {"status": "error", "message": "Unexpected error during API verification."}
 
     def _update_workflow(
         self, prompt: str, n: int, width: int, height: int, negative_prompt: Optional[str]
@@ -220,7 +225,7 @@ class ComfyUIEngine(BaseImageEngine):
         Returns:
             Dict: Updated workflow configuration.
         """
-        workflow = self.workflow
+        workflow = json.loads(self.workflow)
         for node in self.workflow_nodes:
             node_id = node.get("node_ids", [None])[0]
             node_type = node.get("type")
@@ -289,9 +294,12 @@ class ComfyUIEngine(BaseImageEngine):
             log.info("WebSocket communication completed.")
 
             return self._get_generated_images(client_id)
+        except websocket.WebSocketException as e:
+            log.warning(f"WebSocket communication failed: {e}")
+            return {}
         except Exception as e:
             log.error(f"Error during WebSocket communication with ComfyUI: {e}")
-            raise Exception(f"Error during WebSocket communication with ComfyUI: {e}")
+            return {}
 
     def _get_generated_images(self, client_id: str) -> Dict:
         """
@@ -303,14 +311,13 @@ class ComfyUIEngine(BaseImageEngine):
         Returns:
             Dict: Generated image URLs.
         """
-        headers = self.headers  # Utilize headers from BaseImageEngine
+        headers = self._construct_headers()
 
         try:
-            with httpx.Client() as client:
+            with httpx.Client(timeout=10.0) as client:
                 response = client.get(
                     f"{self.base_url}/history/{client_id}",
                     headers=headers,
-                    timeout=30.0,
                 )
             response.raise_for_status()
             history = response.json()
@@ -318,9 +325,12 @@ class ComfyUIEngine(BaseImageEngine):
                 self.get_image_url(**img) for img in history.get("outputs", {}).values()
             ]
             return {"data": images}
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            log.warning(f"Error retrieving generated images from ComfyUI: {e}")
+            return {}
         except Exception as e:
-            log.error(f"Error retrieving generated images from ComfyUI: {e}")
-            raise Exception(f"Error retrieving generated images from ComfyUI: {e}")
+            log.error(f"ComfyUIEngine Error during image retrieval: {e}")
+            return {}
 
     def get_image_url(self, filename: str, subfolder: str, folder_type: str) -> str:
         """
@@ -359,7 +369,7 @@ class ComfyUIEngine(BaseImageEngine):
         """
         try:
             # Update the workflow to set the desired model
-            workflow = self.workflow
+            workflow = json.loads(self.workflow)
             model_set = False
             for node in self.workflow_nodes:
                 node_id = node.get("node_ids", [None])[0]
@@ -383,15 +393,14 @@ class ComfyUIEngine(BaseImageEngine):
 
             if not model_set:
                 log.warning("No model node found in the workflow to set the model.")
-                raise Exception("No model node found in the workflow to set the model.")
+                return
 
             # Update the internal workflow
-            self.workflow = workflow
+            self.workflow = json.dumps(workflow)
 
             # Optionally, save the updated workflow to the configuration if needed
-            # Assuming AppConfig has COMFYUI_WORKFLOW and COMFYUI_WORKFLOW_NODES as JSON strings
             if hasattr(self.config, "COMFYUI_WORKFLOW"):
-                self.config.COMFYUI_WORKFLOW.value = json.dumps(self.workflow)
+                self.config.COMFYUI_WORKFLOW.value = self.workflow
                 self.config.COMFYUI_WORKFLOW.save()
             if hasattr(self.config, "COMFYUI_WORKFLOW_NODES"):
                 self.config.COMFYUI_WORKFLOW_NODES.value = json.dumps(self.workflow_nodes)
@@ -400,7 +409,6 @@ class ComfyUIEngine(BaseImageEngine):
             log.info(f"ComfyUIEngine model set to '{model}' successfully.")
         except Exception as e:
             log.error(f"Failed to set model '{model}' in ComfyUIEngine: {e}")
-            raise Exception(f"Failed to set model '{model}' in ComfyUIEngine: {e}")
 
     def get_model(self) -> str:
         """
@@ -410,7 +418,7 @@ class ComfyUIEngine(BaseImageEngine):
             str: Currently selected model.
         """
         try:
-            workflow = self.workflow
+            workflow = json.loads(self.workflow)
             model_node_id = self._get_model_node_id()
             if not model_node_id:
                 log.warning("No model node found in the workflow.")
@@ -436,7 +444,7 @@ class ComfyUIEngine(BaseImageEngine):
             app_config (AppConfig): The shared configuration object.
         """
         log.debug("ComfyUIEngine updating configuration.")
-        
+
         # Fallback to AppConfig.ENGINE if "engine" is not in form_data
         engine = form_data.get("engine", "").lower()
         current_engine = getattr(app_config, "ENGINE", "").lower()
