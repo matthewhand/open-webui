@@ -2,7 +2,6 @@ import logging
 import re
 from typing import Optional, Dict, Any
 
-import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
