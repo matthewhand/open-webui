@@ -5,8 +5,7 @@ import logging
 from typing import List, Dict, Optional
 
 import httpx
-from ..base import BaseImageEngine
-from ..registry import engine_registry
+from open_webui.apps.images.base import BaseImageEngine
 from open_webui.config import (
     AUTOMATIC1111_BASE_URL,
     AUTOMATIC1111_API_AUTH,

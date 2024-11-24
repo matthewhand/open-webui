@@ -9,8 +9,7 @@ from typing import List, Dict, Optional
 import httpx
 import websocket
 from open_webui.config import COMFYUI_BASE_URL, COMFYUI_WORKFLOW, COMFYUI_WORKFLOW_NODES, AppConfig
-from ..base import BaseImageEngine
-from ..registry import engine_registry
+from open_webui.apps.images.base import BaseImageEngine
 
 log = logging.getLogger(__name__)
 

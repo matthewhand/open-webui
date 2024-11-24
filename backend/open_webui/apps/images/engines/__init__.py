@@ -1,15 +1,15 @@
-from .automatic1111 import Automatic1111Provider
-from .openai import OpenAIProvider
-from .comfyui import ComfyUIProvider
-from ..registry import engine_registry
+from .automatic1111 import Automatic1111Engine
+from .openai import OpenAIEngine
+from .comfyui import ComfyUIEngine
+from open_webui.apps.images.registry import engine_registry
 
 # Explicitly register providers
-engine_registry.register("automatic1111", Automatic1111Provider)
-engine_registry.register("openai", OpenAIProvider)
-engine_registry.register("comfyui", ComfyUIProvider)
+engine_registry.register("automatic1111", Automatic1111Engine)
+engine_registry.register("openai", OpenAIEngine)
+engine_registry.register("comfyui", ComfyUIEngine)
 
 __all__ = [
-    "Automatic1111Provider",
-    "OpenAIProvider",
-    "ComfyUIProvider",
+    "Automatic1111Engine",
+    "OpenAIEngine",
+    "ComfyUIEngine",
 ]
