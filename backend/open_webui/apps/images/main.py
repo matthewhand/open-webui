@@ -1,11 +1,5 @@
-import asyncio
-import base64
-import json
 import logging
-import mimetypes
 import re
-import uuid
-from pathlib import Path
 from typing import Optional, Dict, Any
 
 import httpx
@@ -16,8 +10,6 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 
 from open_webui.config import (
-    IMAGE_ENABLED_PROVIDERS,
-    IMAGE_ENABLED_PROVIDERS_LIST,  # Already parsed as a list
     IMAGE_GENERATION_ENGINE,
     ENABLE_IMAGE_GENERATION,
     IMAGE_GENERATION_MODEL,
@@ -26,11 +18,14 @@ from open_webui.config import (
     CORS_ALLOW_ORIGIN,
     AppConfig,
 )
-from open_webui.env import ENV, SRC_LOG_LEVELS #, ENABLE_FORWARD_USER_INFO_HEADERS
+from open_webui.env import ENV, SRC_LOG_LEVELS
 from open_webui.utils.utils import get_admin_user, get_verified_user
 
-from .providers.registry import provider_registry
-from .providers.base import BaseImageProvider
+from .registry import engine_registry
+from .base import BaseImageEngine
+
+log = logging.getLogger(__name__)
+log.setLevel(SRC_LOG_LEVELS["IMAGES"])
 
 # Initialize logger
 logging.basicConfig(
@@ -61,7 +56,7 @@ app.add_middleware(
 class ConfigForm(BaseModel):
     enabled: Optional[bool] = None
     engine: Optional[str] = None
-    # Provider-specific configurations are allowed as extra fields
+    # Engine-specific configurations are allowed as extra fields
     class Config:
         extra = "allow"
 
@@ -85,45 +80,37 @@ app.state.config.MODEL = IMAGE_GENERATION_MODEL
 app.state.config.IMAGE_SIZE = IMAGE_SIZE
 app.state.config.IMAGE_STEPS = IMAGE_STEPS
 
-# Dynamically instantiate providers from the registry
-PROVIDERS: Dict[str, BaseImageProvider] = {}
+# Dynamically instantiate engines from the registry
+ENGINES: Dict[str, BaseImageEngine] = {}
 
-log.debug(f"IMAGE_ENABLED_PROVIDERS raw value: '{IMAGE_ENABLED_PROVIDERS}'")
-log.debug(f"Parsed IMAGE_ENABLED_PROVIDERS_LIST: {IMAGE_ENABLED_PROVIDERS_LIST}")
-
-# Load and validate providers
+# Load and validate engines
 try:
-    log.info("Initializing providers...")
-    available_providers = provider_registry.list_providers()
-    log.debug(f"Available providers from registry: {available_providers}")
+    log.info("Initializing engines...")
+    available_engines = engine_registry.list_engines()
+    log.debug(f"Available engines from registry: {available_engines}")
 
-    for provider_name in available_providers:
-        provider_key = provider_name.lower()
+    for engine_name in available_engines:
+        engine_key = engine_name.lower()
 
-        log.debug(f"Attempting to load provider: {provider_name}")
+        log.debug(f"Attempting to load engine: {engine_name}")
 
-        # Check if provider is enabled
-        if IMAGE_ENABLED_PROVIDERS_LIST and provider_key not in IMAGE_ENABLED_PROVIDERS_LIST:
-            log.info(f"Skipping provider '{provider_name}' as it's not in the enabled list.")
-            continue
-
-        provider_class = provider_registry.get_provider(provider_name)
-        if not provider_class:
-            log.warning(f"Provider '{provider_name}' not found in registry.")
+        engine_class = engine_registry.get_engine(engine_name)
+        if not engine_class:
+            log.warning(f"Engine '{engine_name}' not found in registry.")
             continue
 
         try:
-            # Instantiate provider with shared configuration
-            provider_instance = provider_class(config=app.state.config)
-            PROVIDERS[provider_key] = provider_instance
-            log.info(f"Provider '{provider_name}' loaded successfully.")
+            # Instantiate engine with shared configuration
+            engine_instance = engine_class(config=app.state.config)
+            ENGINES[engine_key] = engine_instance
+            log.info(f"Engine '{engine_name}' loaded successfully.")
         except Exception as e:
-            log.error(f"Failed to load provider '{provider_name}': {e}", exc_info=True)
+            log.error(f"Failed to load engine '{engine_name}': {e}", exc_info=True)
 except Exception as e:
-    log.critical(f"Critical error during provider initialization: {e}", exc_info=True)
+    log.critical(f"Critical error during engine initialization: {e}", exc_info=True)
     raise
 
-log.info(f"Provider initialization completed. Loaded providers: {list(PROVIDERS.keys())}")
+log.info(f"Engine initialization completed. Loaded engines: {list(ENGINES.keys())}")
 
 # Enforce default engine on startup
 def enforce_default_engine():
@@ -136,18 +123,18 @@ def enforce_default_engine():
             app.state.config.ENGINE = "openai"
             log.warning("ENGINE was not a string. Defaulting to 'openai'.")
 
-        if not engine or engine not in PROVIDERS:
+        if not engine or engine not in ENGINES:
             default_engine = "openai"
-            if default_engine in PROVIDERS:
+            if default_engine in ENGINES:
                 app.state.config.ENGINE = default_engine
                 log.warning(f"Engine was missing or invalid. Defaulting to '{default_engine}'.")
             else:
-                log.error(f"Default engine '{default_engine}' is not available in the enabled providers.")
+                log.error(f"Default engine '{default_engine}' is not available in the enabled engines.")
     except Exception as e:
         log.exception(f"Unexpected error during default engine enforcement: {e}")
         app.state.config.ENGINE = "openai"  # Fallback to 'openai'
 
-# Call the function during app initialization, after providers are loaded
+# Call the function during app initialization, after engines are loaded
 enforce_default_engine()
 
 # Custom Exception Handlers
@@ -187,24 +174,24 @@ async def log_requests(request: Request, call_next):
         log.error(f"Middleware error: {e}")
         raise e
 
-# Utility function to fetch and sanitize provider configurations
-def get_populated_configs(providers: Dict[str, BaseImageProvider]) -> Dict[str, Dict[str, Any]]:
+# Utility function to fetch and sanitize engine configurations
+def get_populated_configs(engines: Dict[str, BaseImageEngine]) -> Dict[str, Dict[str, Any]]:
     """
-    Dynamically fetch all configurations from providers,
+    Dynamically fetch all configurations from engines,
     substituting missing or None values with empty strings.
 
     Args:
-        providers (Dict[str, BaseImageProvider]): A dictionary of provider instances.
+        engines (Dict[str, BaseImageEngine]): A dictionary of engine instances.
 
     Returns:
-        Dict[str, Dict[str, Any]]: A dictionary containing sanitized configurations for each provider.
+        Dict[str, Dict[str, Any]]: A dictionary containing sanitized configurations for each engine.
     """
     populated_config = {}
-    for provider_key, provider_instance in providers.items():
-        provider_config = provider_instance.get_config()
+    for engine_key, engine_instance in engines.items():
+        engine_config = engine_instance.get_config()
         # Substitute None with ""
-        clean_config = {k: (v if v is not None else "") for k, v in provider_config.items()}
-        populated_config[provider_key] = clean_config
+        clean_config = {k: (v if v is not None else "") for k, v in engine_config.items()}
+        populated_config[engine_key] = clean_config
     return populated_config
 
 # Routes
@@ -212,7 +199,7 @@ def get_populated_configs(providers: Dict[str, BaseImageProvider]) -> Dict[str, 
 @app.get("/config")
 def get_config(user=Depends(get_admin_user)):
     """
-    Retrieve current configuration, dynamically flattening provider-specific details.
+    Retrieve current configuration, dynamically flattening engine-specific details.
     """
     log.debug("Retrieving current configuration.")
     general_config = {
@@ -220,11 +207,11 @@ def get_config(user=Depends(get_admin_user)):
         "engine": getattr(app.state.config, "ENGINE", ""),
     }
 
-    # Dynamically fetch and sanitize provider configurations
-    provider_configs = get_populated_configs(PROVIDERS)
+    # Dynamically fetch and sanitize engine configurations
+    engine_configs = get_populated_configs(ENGINES)
 
-    # Combine general and provider-specific configurations into a single top-level structure
-    combined_config = {**general_config, **provider_configs}
+    # Combine general and engine-specific configurations into a single top-level structure
+    combined_config = {**general_config, **engine_configs}
 
     log.debug(f"Combined configuration: {combined_config}")
     return combined_config
@@ -245,35 +232,30 @@ def update_config(form_data: ConfigForm, user=Depends(get_admin_user)):
         if "engine" in data and data["engine"]:
             new_engine = data["engine"].lower()
 
-            if IMAGE_ENABLED_PROVIDERS_LIST and new_engine not in IMAGE_ENABLED_PROVIDERS_LIST:
-                raise HTTPException(status_code=400, detail=f"Engine '{new_engine}' is not enabled.")
-            if new_engine not in PROVIDERS:
-                raise HTTPException(status_code=400, detail=f"Engine '{new_engine}' is not properly configured.")
-
             app.state.config.ENGINE = new_engine
             log.debug(f"Set ENGINE to '{new_engine}'.")
 
-        # Update active provider configurations
-        active_provider = PROVIDERS.get(app.state.config.ENGINE)
-        if active_provider:
-            provider_config = data.get(app.state.config.ENGINE, {})
-            if isinstance(provider_config, dict):
-                active_provider.update_config_in_app(provider_config, app.state.config)
-                log.debug(f"Updated config for provider '{app.state.config.ENGINE}'.")
+        # Update active engine configurations
+        active_engine = ENGINES.get(app.state.config.ENGINE)
+        if active_engine:
+            engine_config = data.get(app.state.config.ENGINE, {})
+            if isinstance(engine_config, dict):
+                active_engine.update_config_in_app(engine_config, app.state.config)
+                log.debug(f"Updated config for engine '{app.state.config.ENGINE}'.")
 
-        # Populate provider-specific configs
-        provider_configs = get_populated_configs(PROVIDERS)
+        # Populate engine-specific configs
+        engine_configs = get_populated_configs(ENGINES)
 
-        # Validate the active provider's configuration
+        # Validate the active engine's configuration
         warnings = []
-        if active_provider and not active_provider.validate_config():
-            warnings.append(f"Provider '{app.state.config.ENGINE}' is not fully configured. Please complete its configuration.")
+        if active_engine and not active_engine.validate_config():
+            warnings.append(f"Engine '{app.state.config.ENGINE}' is not fully configured. Please complete its configuration.")
 
         # Return a complete response with warnings
         combined_config = {
             "enabled": app.state.config.ENABLED,
             "engine": app.state.config.ENGINE,
-            **provider_configs,
+            **engine_configs,
         }
 
         if warnings:
@@ -337,14 +319,14 @@ def update_image_config(form_data: ImageConfigForm, user=Depends(get_admin_user)
                     detail="Invalid IMAGE_STEPS value. It must be a positive integer."
                 )
 
-        # After updating configurations, validate the active provider's configuration
+        # After updating configurations, validate the active engine's configuration
         engine = getattr(app.state.config, "ENGINE", "").lower()
-        provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
-        if not provider or not provider.validate_config():
-            log.error(f"Validation failed for provider '{engine}'. Please check the configuration.")
+        engine: Optional[BaseImageEngine] = ENGINES.get(engine)
+        if not engine or not engine.validate_config():
+            log.error(f"Validation failed for engine '{engine}'. Please check the configuration.")
             raise HTTPException(
                 status_code=400,
-                detail=f"Validation failed for provider '{engine}'. Please check the configuration."
+                detail=f"Validation failed for engine '{engine}'. Please check the configuration."
             )
 
         log.info("Image configuration updated successfully via /image/config/update endpoint.")
@@ -370,25 +352,25 @@ def verify_url(user=Depends(get_admin_user)):
     Verify the connectivity of the configured engine's endpoint.
     """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
+    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
 
     log.debug(f"Verifying URL for engine '{engine}'")
 
-    if not provider:
+    if not engine:
         log.error(f"Engine '{engine}' is not supported.")
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not supported.")
 
-    # Check if provider is configured
-    if not provider.is_configured():
+    # Check if engine is configured
+    if not engine.is_configured():
         log.error(f"Engine '{engine}' is not properly configured.")
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
 
     try:
-        provider.verify_url()  # Call provider-specific verification
+        engine.verify_url()  # Call engine-specific verification
         log.info(f"Engine '{engine}' verified successfully.")
         return {"message": f"Engine '{engine}' verified successfully."}
     except HTTPException as e:
-        # Re-raise HTTPExceptions from provider.verify_url()
+        # Re-raise HTTPExceptions from engine.verify_url()
         raise e
     except Exception as e:
         log.exception(f"URL verification failed for engine '{engine}': {e}")
@@ -400,11 +382,11 @@ def get_models(user=Depends(get_verified_user)):
     Retrieve models available in the selected engine.
     """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
+    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
 
     log.debug(f"Fetching available models for engine '{engine}'")
 
-    if not provider:
+    if not engine:
         return {
             "status": "error",
             "message": f"Engine '{engine}' is not supported. Please choose a valid engine.",
@@ -412,7 +394,7 @@ def get_models(user=Depends(get_verified_user)):
         }
 
     # Validate configuration
-    valid, missing_fields = provider.validate_config()
+    valid, missing_fields = engine.validate_config()
     if not valid:
         return {
             "status": "warning",
@@ -421,7 +403,7 @@ def get_models(user=Depends(get_verified_user)):
         }
 
     try:
-        models = provider.list_models()
+        models = engine.list_models()
         return {"status": "ok", "models": models}
     except Exception as e:
         log.exception(f"Failed to retrieve models for engine '{engine}': {e}")
@@ -437,16 +419,16 @@ def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user
     Generate images using the selected engine.
     """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
+    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
 
     log.debug(f"Generating images using engine '{engine}' with data: {form_data.dict()}")
 
-    if not provider:
+    if not engine:
         log.error(f"Engine '{engine}' is not supported.")
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not supported.")
 
-    # Check if provider is configured
-    if not provider.is_configured():
+    # Check if engine is configured
+    if not engine.is_configured():
         log.error(f"Engine '{engine}' is not properly configured.")
         raise HTTPException(status_code=400, detail=f"Engine '{engine}' is not properly configured.")
 
@@ -454,7 +436,7 @@ def generate_images(form_data: GenerateImageForm, user=Depends(get_verified_user
     log.debug(f"Using image size: '{size}'")
 
     try:
-        images = provider.generate_image(
+        images = engine.generate_image(
             prompt=form_data.prompt,
             n=form_data.n,
             size=size,
@@ -494,25 +476,25 @@ def set_image_model(model: str):
     Set the current image model for the selected engine.
     """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
+    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
 
     log.debug(f"Setting image model to '{model}' for engine '{engine}'")
 
-    if not provider:
+    if not engine:
         log.error(f"Engine '{engine}' is not supported.")
         raise ValueError(f"Engine '{engine}' is not supported.")
 
-    # Assuming providers have a `set_model` method
-    if hasattr(provider, 'set_model'):
+    # Assuming engines have a `set_model` method
+    if hasattr(engine, 'set_model'):
         try:
-            provider.set_model(model)
+            engine.set_model(model)
             log.debug(f"Model set to '{model}' successfully for engine '{engine}'")
         except Exception as e:
             log.error(f"Failed to set model for engine '{engine}': {e}")
             raise ValueError(f"Failed to set model for engine '{engine}': {e}")
     else:
-        log.warning(f"Provider '{engine}' does not implement set_model method.")
-        raise ValueError(f"Provider '{engine}' does not support model updates.")
+        log.warning(f"Engine '{engine}' does not implement set_model method.")
+        raise ValueError(f"Engine '{engine}' does not support model updates.")
 
     # Update the configuration directly
     app.state.config.MODEL = model
@@ -523,23 +505,23 @@ def get_image_model():
     Get the current image model for the selected engine.
     """
     engine = getattr(app.state.config, "ENGINE", "").lower()
-    provider: Optional[BaseImageProvider] = PROVIDERS.get(engine)
+    engine: Optional[BaseImageEngine] = ENGINES.get(engine)
 
     log.debug(f"Retrieving current image model for engine '{engine}'")
 
-    if not provider:
+    if not engine:
         log.error(f"Engine '{engine}' is not supported.")
         raise ValueError(f"Engine '{engine}' is not supported.")
 
-    # Assuming providers have a `get_model` method
-    if hasattr(provider, 'get_model'):
+    # Assuming engines have a `get_model` method
+    if hasattr(engine, 'get_model'):
         try:
-            model = provider.get_model()
+            model = engine.get_model()
             log.debug(f"Current model for engine '{engine}': '{model}'")
             return model
         except Exception as e:
             log.error(f"Failed to get model for engine '{engine}': {e}")
             raise ValueError(f"Failed to get model for engine '{engine}': {e}")
     else:
-        log.warning(f"Provider '{engine}' does not implement get_model method.")
+        log.warning(f"Engine '{engine}' does not implement get_model method.")
         return getattr(app.state.config, "MODEL", "")

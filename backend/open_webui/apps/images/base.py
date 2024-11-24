@@ -1,4 +1,4 @@
-# backend/open_webui/apps/images/providers/base.py
+# backend/open_webui/apps/images/engines/base.py
 
 import base64
 import logging
@@ -18,15 +18,15 @@ IMAGE_CACHE_DIR = Path(CACHE_DIR).joinpath("./image/generations/")
 IMAGE_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
-class BaseImageProvider(ABC):
+class BaseImageEngine(ABC):
     """
-    Abstract Base Class for Image Generation Providers.
+    Abstract Base Class for Image Generation Engines.
     Provides common functionality for saving images and managing headers.
     """
 
     def __init__(self, config: AppConfig):
         """
-        Initialize the provider with shared configurations.
+        Initialize the engine with shared configurations.
 
         Args:
             config (AppConfig): Shared configuration object.
@@ -36,7 +36,7 @@ class BaseImageProvider(ABC):
         # Ensure subclass implements populate_config
         self.populate_config()
         self.headers = self._construct_headers()
-        log.debug(f"BaseImageProvider initialized with headers: {self.headers}")
+        log.debug(f"BaseImageEngine initialized with headers: {self.headers}")
 
     def _construct_headers(self) -> Dict[str, str]:
         """
@@ -58,7 +58,7 @@ class BaseImageProvider(ABC):
     @abstractmethod
     def populate_config(self):
         """
-        Populate the shared configuration with provider-specific details.
+        Populate the shared configuration with engine-specific details.
         This method must be implemented by subclasses to define their configuration logic.
         """
         pass
@@ -151,17 +151,17 @@ class BaseImageProvider(ABC):
 
     def get_config(self) -> Dict[str, Optional[str]]:
         """
-        Return provider-specific configuration details.
+        Return engine-specific configuration details.
 
         Returns:
-            Dict[str, Optional[str]]: Provider-specific configuration details.
+            Dict[str, Optional[str]]: Engine-specific configuration details.
         """
         config = {
             "base_url": getattr(self, 'base_url', None),
             "api_key": getattr(self, 'api_key', None),
             "additional_headers": getattr(self, 'additional_headers', {}),
         }
-        log.debug(f"Returning provider configuration: {config}")
+        log.debug(f"Returning engine configuration: {config}")
         return config
 
     @abstractmethod
@@ -195,7 +195,7 @@ class BaseImageProvider(ABC):
     @abstractmethod
     def verify_url(self):
         """
-        Abstract method to verify the connectivity of the provider's API endpoint.
+        Abstract method to verify the connectivity of the engine's API endpoint.
         Must be implemented by subclasses.
         """
         pass
@@ -203,7 +203,7 @@ class BaseImageProvider(ABC):
     @abstractmethod
     def is_configured(self) -> bool:
         """
-        Determine if the provider is properly configured.
+        Determine if the engine is properly configured.
         """
         pass
 

@@ -5,8 +5,8 @@ import httpx
 from typing import List, Dict, Optional
 
 from fastapi import HTTPException
-from .base import BaseImageProvider
-from .registry import provider_registry
+from ..base import BaseImageProvider
+from ..registry import provider_registry
 from open_webui.config import AppConfig, IMAGES_OPENAI_API_BASE_URL, IMAGES_OPENAI_API_KEY
 
 log = logging.getLogger(__name__)
