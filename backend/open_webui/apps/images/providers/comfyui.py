@@ -26,7 +26,7 @@ class ComfyUIProvider(BaseImageProvider):
         Logs info when required config is available and skips silently if not configured.
         """
         config_items = [
-            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value or "", "required": False},
+            {"key": "COMFYUI_BASE_URL", "value": COMFYUI_BASE_URL.value or "http://host.docker.internal:8188/", "required": True},
             {"key": "COMFYUI_WORKFLOW", "value": COMFYUI_WORKFLOW.value or "{}", "required": False},
             {"key": "COMFYUI_WORKFLOW_NODES", "value": COMFYUI_WORKFLOW_NODES.value or "[]", "required": False},
         ]
