@@ -59,25 +59,24 @@ class TogetherAIProvider(BaseImageProvider):
                 "TogetherAIProvider: Required configuration is missing and provider is not available."
             )
 
-    def validate_config(self) -> bool:
+    def validate_config(self) -> (bool, list):
         """
-        Validate TogetherAI-specific configuration.
-        Returns True if valid, False otherwise.
+        Validate the TogetherAIProvider's configuration.
+
+        Returns:
+            tuple: (is_valid (bool), missing_fields (list of str))
         """
         missing_configs = []
-        if not hasattr(self, "base_url") or not self.base_url:
-            missing_configs.append("IMAGES_TOGETHERAI_BASE_URL")
-        if not hasattr(self, "api_key") or not self.api_key:
-            missing_configs.append("IMAGES_TOGETHERAI_API_KEY")
+        if not self.base_url:
+            missing_configs.append("TOGETHERAI_BASE_URL")
+        if not self.api_key:
+            log.warning("TogetherAIProvider: API key is missing. Limited functionality may be available.")
 
         if missing_configs:
-            log.warning(
-                f"TogetherAIProvider: Missing required configurations: {', '.join(missing_configs)}."
-            )
-            return False
+            log.warning(f"TogetherAIProvider: Missing required configurations: {', '.join(missing_configs)}.")
+            return False, missing_configs
 
-        # Additional validation logic can be added here (e.g., URL format, API key pattern)
-        return True
+        return True, []
 
     def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
@@ -235,26 +234,31 @@ class TogetherAIProvider(BaseImageProvider):
         """
         log.debug("TogetherAIProvider updating configuration.")
         engine = form_data.get("engine", "").lower()
-        if engine != "togetherai":
-            log.debug(
-                "TogetherAIProvider: Engine not set to 'togetherai'; skipping config update."
-            )
+        current_engine = getattr(app_config, "ENGINE", "").lower()
+
+        if engine != "togetherai" and current_engine != "togetherai":
+            log.warning("TogetherAIProvider: Engine not set to 'togetherai'; skipping config update.")
             return
 
-        # TogetherAI may not have models to set via the provider, but can update image_size and image_steps
+        # Update image size
         if form_data.get("image_size"):
             app_config.IMAGE_SIZE.value = form_data["image_size"]
-            # app_config.IMAGE_SIZE.save()
-            log.debug(
-                f"TogetherAIProvider: IMAGE_SIZE updated to {form_data['image_size']}"
-            )
+            log.debug(f"TogetherAIProvider: IMAGE_SIZE updated to {form_data['image_size']}")
 
+        # Update image steps
         if form_data.get("image_steps") is not None:
             app_config.IMAGE_STEPS.value = form_data["image_steps"]
-            # app_config.IMAGE_STEPS.save()
-            log.debug(
-                f"TogetherAIProvider: IMAGE_STEPS updated to {form_data['image_steps']}"
-            )
+            log.debug(f"TogetherAIProvider: IMAGE_STEPS updated to {form_data['image_steps']}")
 
-        # Optionally, update other TogetherAI-specific configurations here
-        # For example, if you have model settings or other parameters
+        # Update base URL
+        if form_data.get("IMAGES_TOGETHERAI_BASE_URL"):
+            self.base_url = form_data["IMAGES_TOGETHERAI_BASE_URL"]
+            log.debug(f"TogetherAIProvider: BASE_URL updated to {form_data['IMAGES_TOGETHERAI_BASE_URL']}")
+
+        # Update optional API authentication
+        if form_data.get("IMAGES_TOGETHERAI_API_KEY"):
+            self.api_key = form_data["IMAGES_TOGETHERAI_API_KEY"]
+            log.debug("TogetherAIProvider: API key updated.")
+        else:
+            self.api_key = ""
+            log.debug("TogetherAIProvider: API key cleared.")

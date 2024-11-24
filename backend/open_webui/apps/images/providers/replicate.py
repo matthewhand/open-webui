@@ -45,6 +45,25 @@ class ReplicateProvider(BaseImageProvider):
         else:
             log.debug("ReplicateProvider: Required configuration is missing and provider is not available.")
 
+    def validate_config(self) -> (bool, list):
+        """
+        Validate the ReplicateProvider's configuration.
+
+        Returns:
+            tuple: (is_valid (bool), missing_fields (list of str))
+        """
+        missing_configs = []
+        if not self.base_url:
+            missing_configs.append("REPLICATE_BASE_URL")
+        if not self.api_key:
+            log.warning("ReplicateProvider: API key is missing. Limited functionality may be available.")
+
+        if missing_configs:
+            log.warning(f"ReplicateProvider: Missing required configurations: {', '.join(missing_configs)}.")
+            return False, missing_configs
+
+        return True, []
+
     def generate_image(
         self, prompt: str, n: int, size: str, negative_prompt: Optional[str] = None
     ) -> List[Dict[str, str]]:

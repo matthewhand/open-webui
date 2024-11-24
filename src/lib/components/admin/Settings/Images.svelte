@@ -253,8 +253,29 @@
 										) {
 											toast.error($i18n.t('ComfyUI Base URL is required.'));
 											config.enabled = false;
-										} else if (config.engine === 'openai' && config.openai.OPENAI_API_KEY === '') {
+										} else if (
+											config.engine === 'openai' &&
+											config.openai.OPENAI_API_KEY === ''
+										) {
 											toast.error($i18n.t('OpenAI API Key is required.'));
+											config.enabled = false;
+										} else if (
+											config.engine === 'togetherai' &&
+											config.togetherai.IMAGES_TOGETHERAI_API_KEY === ''
+										) {
+											toast.error($i18n.t('TogetherAI API Key is required.'));
+											config.enabled = false;
+										} else if (
+											config.engine === 'replicate' &&
+											config.replicate.IMAGES_REPLICATE_API_KEY === ''
+										) {
+											toast.error($i18n.t('Replicate API Key is required.'));
+											config.enabled = false;
+										} else if (
+											config.engine === 'huggingface' &&
+											config.huggingface.IMAGES_HUGGINGFACE_API_KEY === ''
+										) {
+											toast.error($i18n.t('Huggingface API Key is required.'));
 											config.enabled = false;
 										}
 									}
@@ -280,6 +301,9 @@
 							<option value="openai">{$i18n.t('Default (Open AI)')}</option>
 							<option value="comfyui">{$i18n.t('ComfyUI')}</option>
 							<option value="automatic1111">{$i18n.t('Automatic1111')}</option>
+							<option value="togetherai">{$i18n.t('TogetherAI')}</option>
+							<option value="replicate">{$i18n.t('Replicate')}</option>
+							<option value="huggingface">{$i18n.t('Huggingface')}</option>
 						</select>
 					</div>
 				</div>
@@ -575,6 +599,61 @@
 							<SensitiveInput
 								placeholder={$i18n.t('API Key')}
 								bind:value={config.openai.OPENAI_API_KEY}
+							/>
+						</div>
+					</div>
+				{/if}
+				{:else if config?.engine === 'togetherai'}
+					<div>
+						<div class="mb-1.5 text-sm font-medium">{$i18n.t('TogetherAI API Config')}</div>
+
+						<div class="flex gap-2 mb-1">
+							<input
+								class="flex-1 w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+								placeholder={$i18n.t('API Base URL')}
+								bind:value={config.togetherai.IMAGES_TOGETHERAI_BASE_URL}
+								required
+							/>
+
+							<SensitiveInput
+								placeholder={$i18n.t('API Key')}
+								bind:value={config.togetherai.IMAGES_TOGETHERAI_API_KEY}
+							/>
+						</div>
+					</div>
+				{:else if config?.engine === 'replicate'}
+					<div>
+						<div class="mb-1.5 text-sm font-medium">{$i18n.t('Replicate API Config')}</div>
+
+						<div class="flex gap-2 mb-1">
+							<input
+								class="flex-1 w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+								placeholder={$i18n.t('API Base URL')}
+								bind:value={config.replicate.IMAGES_REPLICATE_BASE_URL}
+								required
+							/>
+
+							<SensitiveInput
+								placeholder={$i18n.t('API Key')}
+								bind:value={config.replicate.IMAGES_REPLICATE_API_KEY}
+							/>
+						</div>
+					</div>
+				{:else if config?.engine === 'huggingface'}
+					<div>
+						<div class="mb-1.5 text-sm font-medium">{$i18n.t('Huggingface API Config')}</div>
+
+						<div class="flex gap-2 mb-1">
+							<input
+								class="flex-1 w-full rounded-lg py-2 px-4 text-sm bg-gray-50 dark:text-gray-300 dark:bg-gray-850 outline-none"
+								placeholder={$i18n.t('API Base URL')}
+								bind:value={config.huggingface.IMAGES_HUGGINGFACE_BASE_URL}
+								required
+							/>
+
+							<SensitiveInput
+								placeholder={$i18n.t('API Key')}
+								bind:value={config.huggingface.IMAGES_HUGGINGFACE_API_KEY}
 							/>
 						</div>
 					</div>
