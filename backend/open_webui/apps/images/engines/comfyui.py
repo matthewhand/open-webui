@@ -1,4 +1,4 @@
-# backend/open_webui/apps/images/providers/comfyui.py
+# backend/open_webui/apps/images/engines/comfyui.py
 
 import json
 import logging
@@ -9,15 +9,15 @@ from typing import List, Dict, Optional
 import httpx
 import websocket
 from open_webui.config import COMFYUI_BASE_URL, COMFYUI_WORKFLOW, COMFYUI_WORKFLOW_NODES, AppConfig
-from .base import BaseImageProvider
-from .registry import provider_registry
+from ..base import BaseImageEngine
+from ..registry import engine_registry
 
 log = logging.getLogger(__name__)
 
 
-class ComfyUIProvider(BaseImageProvider):
+class ComfyUIEngine(BaseImageEngine):
     """
-    Provider for ComfyUI-based image generation.
+    Engine for ComfyUI-based image generation.
     """
 
     def populate_config(self):
@@ -53,7 +53,7 @@ class ComfyUIProvider(BaseImageProvider):
                         log.warning(f"Failed to parse {key}: {e}. Defaulting to empty list.")
                         self.workflow_nodes = []
             elif required:
-                log.debug(f"ComfyUIProvider: Required configuration '{key}' is not set.")
+                log.debug(f"ComfyUIEngine: Required configuration '{key}' is not set.")
 
         # Ensure defaults
         self.base_url = getattr(self, "base_url", "")
@@ -61,13 +61,13 @@ class ComfyUIProvider(BaseImageProvider):
         self.workflow_nodes = getattr(self, "workflow_nodes", [])
 
         if self.base_url:
-            log.info(f"ComfyUIProvider available with base_url: {self.base_url}")
+            log.info(f"ComfyUIEngine available with base_url: {self.base_url}")
         else:
-            log.debug("ComfyUIProvider: Required configuration is missing and provider is not available.")
+            log.debug("ComfyUIEngine: Required configuration is missing and engine is not available.")
 
     def validate_config(self) -> (bool, list):
         """
-        Validate the ComfyUIProvider's configuration.
+        Validate the ComfyUIEngine's configuration.
 
         Returns:
             tuple: (is_valid (bool), missing_fields (list of str))
@@ -76,11 +76,11 @@ class ComfyUIProvider(BaseImageProvider):
         if not self.base_url:
             missing_configs.append("COMFYUI_BASE_URL")
         if not self.workflow:
-            log.warning("ComfyUIProvider: Workflow is missing. Limited functionality may be available.")
+            log.warning("ComfyUIEngine: Workflow is missing. Limited functionality may be available.")
 
         if missing_configs:
             log.warning(
-                f"ComfyUIProvider: Missing required configurations: {', '.join(missing_configs)}."
+                f"ComfyUIEngine: Missing required configurations: {', '.join(missing_configs)}."
             )
             return False, missing_configs
 
@@ -103,8 +103,8 @@ class ComfyUIProvider(BaseImageProvider):
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
         if not self.base_url:
-            log.error("ComfyUIProvider is not configured properly.")
-            raise Exception("ComfyUIProvider is not configured.")
+            log.error("ComfyUIEngine is not configured properly.")
+            raise Exception("ComfyUIEngine is not configured.")
 
         try:
             width, height = map(int, size.lower().split("x"))
@@ -117,14 +117,14 @@ class ComfyUIProvider(BaseImageProvider):
         )
 
         client_id = str(random.randint(100000, 999999))
-        log.debug(f"ComfyUIProvider Workflow: {json.dumps(updated_workflow, indent=2)}")
+        log.debug(f"ComfyUIEngine Workflow: {json.dumps(updated_workflow, indent=2)}")
 
         try:
             images = self._comfyui_generate_image(client_id=client_id, workflow=updated_workflow)
             return images.get("data", [])
         except Exception as e:
-            log.exception(f"ComfyUIProvider Error during image generation: {e}")
-            raise Exception(f"ComfyUIProvider Error: {e}")
+            log.exception(f"ComfyUIEngine Error during image generation: {e}")
+            raise Exception(f"ComfyUIEngine Error: {e}")
 
     def list_models(self) -> List[Dict[str, str]]:
         """
@@ -134,10 +134,10 @@ class ComfyUIProvider(BaseImageProvider):
             List[Dict[str, str]]: List of available models.
         """
         if not self.base_url:
-            log.error("ComfyUIProvider is not configured properly.")
+            log.error("ComfyUIEngine is not configured properly.")
             return []
 
-        headers = self.headers  # Utilize headers from BaseImageProvider
+        headers = self.headers  # Utilize headers from BaseImageEngine
 
         try:
             with httpx.Client() as client:
@@ -186,10 +186,10 @@ class ComfyUIProvider(BaseImageProvider):
         Verify the connectivity of ComfyUI's API endpoint.
         """
         if not self.base_url:
-            log.error("ComfyUIProvider is not configured properly.")
-            raise Exception("ComfyUIProvider is not configured.")
+            log.error("ComfyUIEngine is not configured properly.")
+            raise Exception("ComfyUIEngine is not configured.")
 
-        headers = self.headers  # Utilize headers from BaseImageProvider
+        headers = self.headers  # Utilize headers from BaseImageEngine
 
         try:
             with httpx.Client() as client:
@@ -304,7 +304,7 @@ class ComfyUIProvider(BaseImageProvider):
         Returns:
             Dict: Generated image URLs.
         """
-        headers = self.headers  # Utilize headers from BaseImageProvider
+        headers = self.headers  # Utilize headers from BaseImageEngine
 
         try:
             with httpx.Client() as client:
@@ -398,10 +398,10 @@ class ComfyUIProvider(BaseImageProvider):
                 self.config.COMFYUI_WORKFLOW_NODES.value = json.dumps(self.workflow_nodes)
                 self.config.COMFYUI_WORKFLOW_NODES.save()
 
-            log.info(f"ComfyUIProvider model set to '{model}' successfully.")
+            log.info(f"ComfyUIEngine model set to '{model}' successfully.")
         except Exception as e:
-            log.error(f"Failed to set model '{model}' in ComfyUIProvider: {e}")
-            raise Exception(f"Failed to set model '{model}' in ComfyUIProvider: {e}")
+            log.error(f"Failed to set model '{model}' in ComfyUIEngine: {e}")
+            raise Exception(f"Failed to set model '{model}' in ComfyUIEngine: {e}")
 
     def get_model(self) -> str:
         """
@@ -430,33 +430,33 @@ class ComfyUIProvider(BaseImageProvider):
 
     def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
         """
-        Update the shared AppConfig based on form data for ComfyUI provider.
+        Update the shared AppConfig based on form data for ComfyUI engine.
 
         Args:
             form_data (Dict): The form data submitted by the user.
             app_config (AppConfig): The shared configuration object.
         """
-        log.debug("ComfyUIProvider updating configuration.")
+        log.debug("ComfyUIEngine updating configuration.")
         
         # Fallback to AppConfig.ENGINE if "engine" is not in form_data
         engine = form_data.get("engine", "").lower()
         current_engine = getattr(app_config, "ENGINE", "").lower()
 
         if engine != "comfyui" and current_engine != "comfyui":
-            log.warning("ComfyUIProvider: Engine not set to 'comfyui'; skipping config update.")
+            log.warning("ComfyUIEngine: Engine not set to 'comfyui'; skipping config update.")
             return
 
         # Update model if provided
         if form_data.get("model"):
             self.set_model(form_data["model"])
-            log.debug(f"ComfyUIProvider: Model updated to {form_data['model']}")
+            log.debug(f"ComfyUIEngine: Model updated to {form_data['model']}")
 
         # Update image size
         if form_data.get("image_size"):
             app_config.IMAGE_SIZE.value = form_data["image_size"]
-            log.debug(f"ComfyUIProvider: IMAGE_SIZE updated to {form_data['image_size']}")
+            log.debug(f"ComfyUIEngine: IMAGE_SIZE updated to {form_data['image_size']}")
 
         # Update image steps
         if form_data.get("image_steps") is not None:
             app_config.IMAGE_STEPS.value = form_data["image_steps"]
-            log.debug(f"ComfyUIProvider: IMAGE_STEPS updated to {form_data['image_steps']}")
+            log.debug(f"ComfyUIEngine: IMAGE_STEPS updated to {form_data['image_steps']}")

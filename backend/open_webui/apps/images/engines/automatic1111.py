@@ -1,12 +1,12 @@
-# backend/open_webui/apps/images/providers/automatic1111.py
+# backend/open_webui/apps/images/engines/automatic1111.py
 
 import json
 import logging
 from typing import List, Dict, Optional
 
 import httpx
-from ..base import BaseImageProvider
-from ..registry import provider_registry
+from ..base import BaseImageEngine
+from ..registry import engine_registry
 from open_webui.config import (
     AUTOMATIC1111_BASE_URL,
     AUTOMATIC1111_API_AUTH,
@@ -19,9 +19,9 @@ from open_webui.config import (
 log = logging.getLogger(__name__)
 
 
-class Automatic1111Provider(BaseImageProvider):
+class Automatic1111Engine(BaseImageEngine):
     """
-    Provider for AUTOMATIC1111-based image generation.
+    Engine for AUTOMATIC1111-based image generation.
     """
 
     def populate_config(self):
@@ -30,7 +30,7 @@ class Automatic1111Provider(BaseImageProvider):
         Logs info when required config is available and sets defaults for missing optional fields.
         """
 
-        log.debug("Executing Automatic1111Provider populate_config...")
+        log.debug("Executing Automatic1111Engine populate_config...")
         config_items = [
             {"key": "AUTOMATIC1111_BASE_URL", "value": AUTOMATIC1111_BASE_URL.value or "http://host.docker.internal:7860/", "required": True},
             {"key": "AUTOMATIC1111_API_AUTH", "value": AUTOMATIC1111_API_AUTH.value or "", "required": False},
@@ -56,7 +56,7 @@ class Automatic1111Provider(BaseImageProvider):
                 elif key == "AUTOMATIC1111_SCHEDULER":
                     self.scheduler = value
             elif required:
-                log.debug(f"Automatic1111Provider: Missing required configuration '{key}'.")
+                log.debug(f"Automatic1111Engine: Missing required configuration '{key}'.")
 
         # Ensure all required and optional fields are set
         self.base_url = getattr(self, "base_url", "")
@@ -66,13 +66,13 @@ class Automatic1111Provider(BaseImageProvider):
         self.scheduler = getattr(self, "scheduler", "normal")
 
         if self.base_url:
-            log.info(f"Automatic1111Provider available with base_url: {self.base_url}")
+            log.info(f"Automatic1111Engine available with base_url: {self.base_url}")
         else:
-            log.debug("Automatic1111Provider: Required configuration is missing and provider is not available.")
+            log.debug("Automatic1111Engine: Required configuration is missing and engine is not available.")
 
     def validate_config(self) -> (bool, list):
         """
-        Validate the Automatic1111Provider's configuration.
+        Validate the Automatic1111Engine's configuration.
 
         Returns:
             tuple: (is_valid (bool), missing_fields (list of str))
@@ -83,7 +83,7 @@ class Automatic1111Provider(BaseImageProvider):
 
         if missing_configs:
             log.warning(
-                f"Automatic1111Provider: Missing required configurations: {', '.join(missing_configs)}."
+                f"Automatic1111Engine: Missing required configurations: {', '.join(missing_configs)}."
             )
             return False, missing_configs
 
@@ -106,8 +106,8 @@ class Automatic1111Provider(BaseImageProvider):
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
         if not self.base_url:
-            log.error("Automatic1111Provider is not configured properly.")
-            raise Exception("Automatic1111Provider is not configured.")
+            log.error("Automatic1111Engine is not configured properly.")
+            raise Exception("Automatic1111Engine is not configured.")
 
         try:
             width, height = map(int, size.lower().split("x"))
@@ -128,7 +128,7 @@ class Automatic1111Provider(BaseImageProvider):
         if negative_prompt:
             payload["negative_prompt"] = negative_prompt
 
-        log.debug(f"Automatic1111Provider Payload: {payload}")
+        log.debug(f"Automatic1111Engine Payload: {payload}")
 
         headers = {}
         if self.api_key:
@@ -142,10 +142,10 @@ class Automatic1111Provider(BaseImageProvider):
                     json=payload,
                     timeout=120.0,
                 )
-            log.debug(f"Automatic1111Provider Response Status: {response.status_code}")
+            log.debug(f"Automatic1111Engine Response Status: {response.status_code}")
             response.raise_for_status()
             res = response.json()
-            log.debug(f"Automatic1111Provider Response: {res}")
+            log.debug(f"Automatic1111Engine Response: {res}")
 
             images = []
             for img in res.get("images", []):
@@ -155,11 +155,11 @@ class Automatic1111Provider(BaseImageProvider):
             return images
 
         except httpx.RequestError as e:
-            log.error(f"Automatic1111Provider Request failed: {e}")
-            raise Exception(f"Automatic1111Provider Request failed: {e}")
+            log.error(f"Automatic1111Engine Request failed: {e}")
+            raise Exception(f"Automatic1111Engine Request failed: {e}")
         except Exception as e:
-            log.error(f"Automatic1111Provider Error: {e}")
-            raise Exception(f"Automatic1111Provider Error: {e}")
+            log.error(f"Automatic1111Engine Error: {e}")
+            raise Exception(f"Automatic1111Engine Error: {e}")
 
     def list_models(self) -> List[Dict[str, str]]:
         """
@@ -169,7 +169,7 @@ class Automatic1111Provider(BaseImageProvider):
             List[Dict[str, str]]: List of available models.
         """
         if not self.base_url:
-            log.error("Automatic1111Provider is not configured properly.")
+            log.error("Automatic1111Engine is not configured properly.")
             return []
 
         try:
@@ -185,7 +185,7 @@ class Automatic1111Provider(BaseImageProvider):
                 )
             response.raise_for_status()
             models = response.json()
-            log.debug(f"Automatic1111Provider Models Response: {models}")
+            log.debug(f"Automatic1111Engine Models Response: {models}")
             return [
                 {"id": model.get("title", "unknown"), "name": model.get("model_name", "unknown")}
                 for model in models
@@ -199,8 +199,8 @@ class Automatic1111Provider(BaseImageProvider):
         Verify the connectivity of AUTOMATIC1111's API endpoint.
         """
         if not self.base_url:
-            log.error("Automatic1111Provider is not configured properly.")
-            raise Exception("Automatic1111Provider is not configured.")
+            log.error("Automatic1111Engine is not configured properly.")
+            raise Exception("Automatic1111Engine is not configured.")
 
         headers = {}
         if self.api_key:
@@ -273,7 +273,7 @@ class Automatic1111Provider(BaseImageProvider):
             str: Currently selected model.
         """
         if not self.base_url:
-            raise Exception("Automatic1111Provider is not configured.")
+            raise Exception("Automatic1111Engine is not configured.")
 
         try:
             headers = {}
@@ -315,43 +315,43 @@ class Automatic1111Provider(BaseImageProvider):
 
     def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
         """
-        Update the shared AppConfig based on form data for AUTOMATIC1111 provider.
+        Update the shared AppConfig based on form data for AUTOMATIC1111 engine.
 
         Args:
             form_data (Dict): The form data submitted by the user.
             app_config (AppConfig): The shared configuration object.
         """
-        log.debug("Automatic1111Provider updating configuration.")
+        log.debug("Automatic1111Engine updating configuration.")
         
         # Fallback to AppConfig.ENGINE if "engine" is not in form_data
         engine = form_data.get("engine", "").lower()
         current_engine = getattr(app_config, "ENGINE", "").lower()
 
         if engine != "automatic1111" and current_engine != "automatic1111":
-            log.warning("Automatic1111Provider: Engine not set to 'automatic1111'; skipping config update.")
+            log.warning("Automatic1111Engine: Engine not set to 'automatic1111'; skipping config update.")
             return
 
         # Update model if provided
         if form_data.get("model"):
             self.set_model(form_data["model"])
-            log.debug(f"Automatic1111Provider: Model updated to {form_data['model']}")
+            log.debug(f"Automatic1111Engine: Model updated to {form_data['model']}")
 
         # Update image size
         if form_data.get("image_size"):
             app_config.IMAGE_SIZE.value = form_data["image_size"]
-            log.debug(f"Automatic1111Provider: IMAGE_SIZE updated to {form_data['image_size']}")
+            log.debug(f"Automatic1111Engine: IMAGE_SIZE updated to {form_data['image_size']}")
 
         # Update image steps
         if form_data.get("image_steps") is not None:
             app_config.IMAGE_STEPS.value = form_data["image_steps"]
-            log.debug(f"Automatic1111Provider: IMAGE_STEPS updated to {form_data['image_steps']}")
+            log.debug(f"Automatic1111Engine: IMAGE_STEPS updated to {form_data['image_steps']}")
 
         # Update base URL
         if form_data.get("AUTOMATIC1111_BASE_URL"):
             self.base_url = form_data["AUTOMATIC1111_BASE_URL"]
-            log.debug(f"Automatic1111Provider: BASE_URL updated to {form_data['AUTOMATIC1111_BASE_URL']}")
+            log.debug(f"Automatic1111Engine: BASE_URL updated to {form_data['AUTOMATIC1111_BASE_URL']}")
 
         # Update optional API authentication
         if form_data.get("AUTOMATIC1111_API_AUTH"):
             self.api_auth = form_data["AUTOMATIC1111_API_AUTH"]
-            log.debug("Automatic1111Provider: API authentication updated.")
+            log.debug("Automatic1111Engine: API authentication updated.")

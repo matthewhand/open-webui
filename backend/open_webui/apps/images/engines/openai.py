@@ -1,19 +1,19 @@
-# backend/open_webui/apps/images/providers/openai.py
+# backend/open_webui/apps/images/engines/openai.py
 
 import logging
 import httpx
 from typing import List, Dict, Optional
 
 from fastapi import HTTPException
-from ..base import BaseImageProvider
-from ..registry import provider_registry
+from ..base import BaseImageEngine
+from ..registry import engine_registry
 from open_webui.config import AppConfig, IMAGES_OPENAI_API_BASE_URL, IMAGES_OPENAI_API_KEY
 
 log = logging.getLogger(__name__)
 
-class OpenAIProvider(BaseImageProvider):
+class OpenAIEngine(BaseImageEngine):
     """
-    Provider for OpenAI's DALL·E image generation API.
+    Engine for OpenAI's DALL·E image generation API.
     """
 
     def populate_config(self):
@@ -37,7 +37,7 @@ class OpenAIProvider(BaseImageProvider):
                 elif key == "IMAGES_OPENAI_API_KEY":
                     self.api_key = value
             elif required:
-                log.warning(f"OpenAIProvider: Missing required configuration '{key}'.")
+                log.warning(f"OpenAIEngine: Missing required configuration '{key}'.")
 
         # Ensure all required attributes are set
         self.base_url = getattr(self, "base_url", "")
@@ -47,13 +47,13 @@ class OpenAIProvider(BaseImageProvider):
         self.current_model = getattr(self, "current_model", "dall-e-3")
 
         if self.base_url and self.api_key:
-            log.info(f"OpenAIProvider available with base_url: {self.base_url}")
+            log.info(f"OpenAIEngine available with base_url: {self.base_url}")
         else:
-            log.debug("OpenAIProvider: Required configuration is missing and provider is not available.")
+            log.debug("OpenAIEngine: Required configuration is missing and engine is not available.")
 
     def validate_config(self) -> (bool, list):
         """
-        Validate the OpenAIProvider's configuration.
+        Validate the OpenAIEngine's configuration.
 
         Returns:
             tuple: (is_valid (bool), missing_fields (list of str))
@@ -62,11 +62,11 @@ class OpenAIProvider(BaseImageProvider):
         if not self.base_url:
             missing_configs.append("OPENAI_API_BASE_URL")
         if not self.api_key:
-            log.warning("OpenAIProvider: API key is missing. Limited functionality may be available.")
+            log.warning("OpenAIEngine: API key is missing. Limited functionality may be available.")
 
         if missing_configs:
             log.warning(
-                f"OpenAIProvider: Missing required configurations: {', '.join(missing_configs)}."
+                f"OpenAIEngine: Missing required configurations: {', '.join(missing_configs)}."
             )
             return False, missing_configs
 
@@ -89,8 +89,8 @@ class OpenAIProvider(BaseImageProvider):
             List[Dict[str, str]]: List of URLs pointing to generated images.
         """
         if not self.validate_config():
-            log.error("OpenAIProvider is not configured properly.")
-            raise HTTPException(status_code=500, detail="OpenAIProvider configuration is incomplete.")
+            log.error("OpenAIEngine is not configured properly.")
+            raise HTTPException(status_code=500, detail="OpenAIEngine configuration is incomplete.")
 
         payload = {
             "model": self.get_model(),
@@ -103,7 +103,7 @@ class OpenAIProvider(BaseImageProvider):
         if negative_prompt:
             payload["negative_prompt"] = negative_prompt  # OpenAI may support this in the future
 
-        log.debug(f"OpenAIProvider Payload: {payload}")
+        log.debug(f"OpenAIEngine Payload: {payload}")
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -118,27 +118,27 @@ class OpenAIProvider(BaseImageProvider):
                     json=payload,
                     timeout=120.0,
                 )
-            log.debug(f"OpenAIProvider Response Status: {response.status_code}")
+            log.debug(f"OpenAIEngine Response Status: {response.status_code}")
             response.raise_for_status()
             res = response.json()
-            log.debug(f"OpenAIProvider Response: {res}")
+            log.debug(f"OpenAIEngine Response: {res}")
 
             images = []
             for image_data in res.get("data", []):
                 b64_image = image_data.get("b64_json")
                 if b64_image:
-                    # Use the inherited method from BaseImageProvider to save the image
+                    # Use the inherited method from BaseImageEngine to save the image
                     image_filename = self.save_b64_image(b64_image)
                     if image_filename:
                         images.append({"url": f"/cache/image/generations/{image_filename}"})
             return images
 
         except httpx.RequestError as e:
-            log.error(f"OpenAIProvider Request failed: {e}")
-            raise HTTPException(status_code=502, detail=f"OpenAIProvider Request failed: {e}")
+            log.error(f"OpenAIEngine Request failed: {e}")
+            raise HTTPException(status_code=502, detail=f"OpenAIEngine Request failed: {e}")
         except Exception as e:
-            log.error(f"OpenAIProvider Error: {e}")
-            raise HTTPException(status_code=500, detail=f"OpenAIProvider Error: {e}")
+            log.error(f"OpenAIEngine Error: {e}")
+            raise HTTPException(status_code=500, detail=f"OpenAIEngine Error: {e}")
 
     def list_models(self) -> List[Dict[str, str]]:
         """
@@ -177,8 +177,8 @@ class OpenAIProvider(BaseImageProvider):
             log.error(f"Failed to verify OpenAI API: {e}")
             raise HTTPException(status_code=502, detail=f"Failed to verify OpenAI API: {e}")
         except Exception as e:
-            log.error(f"OpenAIProvider Error during URL verification: {e}")
-            raise HTTPException(status_code=500, detail=f"OpenAIProvider Error during URL verification: {e}")
+            log.error(f"OpenAIEngine Error during URL verification: {e}")
+            raise HTTPException(status_code=500, detail=f"OpenAIEngine Error during URL verification: {e}")
 
     def set_model(self, model: str):
         """
@@ -188,9 +188,9 @@ class OpenAIProvider(BaseImageProvider):
             model (str): Model ID (e.g., 'dall-e-2' or 'dall-e-3').
         """
         if model not in ["dall-e-2", "dall-e-3"]:
-            raise ValueError(f"Model '{model}' is not supported by OpenAIProvider.")
+            raise ValueError(f"Model '{model}' is not supported by OpenAIEngine.")
         self.current_model = model
-        log.info(f"OpenAIProvider model set to: {self.current_model}")
+        log.info(f"OpenAIEngine model set to: {self.current_model}")
 
         # Optionally, save the updated model to the configuration
         if hasattr(self.config, "IMAGE_GENERATION_MODEL"):
@@ -214,55 +214,55 @@ class OpenAIProvider(BaseImageProvider):
                 "OPENAI_API_KEY": self.api_key,
                 "CURRENT_MODEL": self.current_model,
             }
-            log.debug(f"OpenAIProvider configuration: {config}")
+            log.debug(f"OpenAIEngine configuration: {config}")
             return config
         except Exception as e:
-            log.error(f"Error retrieving OpenAIProvider config: {e}")
+            log.error(f"Error retrieving OpenAIEngine config: {e}")
             return {}
 
     def is_configured(self) -> bool:
         """
-        Check if OpenAIProvider is properly configured.
+        Check if OpenAIEngine is properly configured.
         """
         return bool(getattr(self, 'base_url', "")) and bool(getattr(self, 'api_key', ""))
 
     def update_config_in_app(self, form_data: Dict, app_config: AppConfig):
         """
-        Update the shared AppConfig based on form data for OpenAI provider.
+        Update the shared AppConfig based on form data for OpenAI engine.
 
         Args:
             form_data (Dict): The form data submitted by the user.
             app_config (AppConfig): The shared configuration object.
         """
-        log.debug("OpenAIProvider updating configuration.")
+        log.debug("OpenAIEngine updating configuration.")
         
         # Fallback to AppConfig.ENGINE if "engine" is not in form_data
         engine = form_data.get("engine", "").lower()
         current_engine = getattr(app_config, "ENGINE", "").lower()
 
         if engine != "openai" and current_engine != "openai":
-            log.warning("OpenAIProvider: Engine not set to 'openai'; skipping config update.")
+            log.warning("OpenAIEngine: Engine not set to 'openai'; skipping config update.")
             return
 
         # Update model if provided
         if form_data.get("model"):
             self.set_model(form_data["model"])
-            log.debug(f"OpenAIProvider: Model updated to {form_data['model']}")
+            log.debug(f"OpenAIEngine: Model updated to {form_data['model']}")
 
         # Update image size
         if form_data.get("image_size"):
             app_config.IMAGE_SIZE.value = form_data["image_size"]
-            log.debug(f"OpenAIProvider: IMAGE_SIZE updated to {form_data['image_size']}")
+            log.debug(f"OpenAIEngine: IMAGE_SIZE updated to {form_data['image_size']}")
 
         # Update image steps
         if form_data.get("image_steps") is not None:
             app_config.IMAGE_STEPS.value = form_data["image_steps"]
-            log.debug(f"OpenAIProvider: IMAGE_STEPS updated to {form_data['image_steps']}")
+            log.debug(f"OpenAIEngine: IMAGE_STEPS updated to {form_data['image_steps']}")
 
         # Additional OpenAI-specific configurations (if any)
         if form_data.get("api_key"):
             self.api_key = form_data["api_key"]
-            log.debug("OpenAIProvider: API key updated.")
+            log.debug("OpenAIEngine: API key updated.")
         if form_data.get("base_url"):
             self.base_url = form_data["base_url"]
-            log.debug(f"OpenAIProvider: Base URL updated to {form_data['base_url']}")
+            log.debug(f"OpenAIEngine: Base URL updated to {form_data['base_url']}")
