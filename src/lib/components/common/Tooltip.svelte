@@ -2,50 +2,111 @@
 	import DOMPurify from 'dompurify';
 
 	import { onDestroy } from 'svelte';
-	import { marked } from 'marked';
 
-	import tippy from 'tippy.js';
-	import { roundArrow } from 'tippy.js';
+	import tippy, {
+		type Instance as TippyInstance,
+		type Placement as TippyPlacement,
+		type Props as TippyProps
+	} from 'tippy.js';
 
-	export let placement = 'top';
+	export let elementId = '';
+
+	export let as = 'div';
+	export let className = 'flex';
+
+	export let placement: TippyPlacement = 'top';
 	export let content = `I'm a tooltip!`;
 	export let touch = true;
-	export let className = 'flex';
 	export let theme = '';
-	export let allowHTML = true;
-	export let tippyOptions = {};
+	export let offset: TippyProps['offset'] = [0, 4];
+	export let allowHTML = false;
+	export let tippyOptions: Partial<TippyProps> = {};
+	export let interactive = false;
 
-	let tooltipElement;
-	let tooltipInstance;
+	export let onClick = () => {};
 
-	$: if (tooltipElement && content) {
-		if (tooltipInstance) {
-			tooltipInstance.setContent(DOMPurify.sanitize(content));
-		} else {
-			tooltipInstance = tippy(tooltipElement, {
-				content: DOMPurify.sanitize(content),
-				placement: placement,
-				allowHTML: allowHTML,
-				touch: touch,
-				...(theme !== '' ? { theme } : { theme: 'dark' }),
-				arrow: false,
-				offset: [0, 4],
-				...tippyOptions
-			});
-		}
-	} else if (tooltipInstance && content === '') {
+	let tooltipElement: HTMLElement | null = null;
+	let tooltipInstance: TippyInstance | null = null;
+
+	function destroyInstance() {
 		if (tooltipInstance) {
 			tooltipInstance.destroy();
+			tooltipInstance = null;
 		}
 	}
 
-	onDestroy(() => {
-		if (tooltipInstance) {
-			tooltipInstance.destroy();
+	$: if (tooltipElement && (content || elementId)) {
+		let tooltipContent: string | Element | DocumentFragment | null = null;
+
+		if (elementId) {
+			tooltipContent = document.getElementById(elementId);
+		} else {
+			tooltipContent = allowHTML ? DOMPurify.sanitize(content) : content;
 		}
+
+		// After the element changes, the old instance must be destroyed, otherwise the detached tippy floating DOM will be left behind
+		if (tooltipInstance && tooltipInstance.reference !== tooltipElement) {
+			destroyInstance();
+		}
+
+		if (tooltipInstance) {
+			tooltipInstance.setContent(tooltipContent ?? '');
+		} else {
+			if (content) {
+				tooltipInstance = tippy(tooltipElement, {
+					content: tooltipContent ?? '',
+					placement,
+					allowHTML,
+					touch,
+					trigger: 'mouseenter focusin',
+					onShow: () => {
+						const focused = document.activeElement;
+						if (
+							!tooltipElement?.matches(':hover') &&
+							tooltipElement?.contains(focused) &&
+							!focused?.matches(':focus-visible')
+						) {
+							return false;
+						}
+					},
+					...(theme !== '' ? { theme } : { theme: 'dark' }),
+					arrow: false,
+					offset,
+					...(interactive ? { interactive: true, aria: { expanded: false } } : {}),
+					plugins: [
+						{
+							fn: (instance) => {
+								const onKeyDown = (e: KeyboardEvent) => {
+									if (e.key === 'Escape') {
+										e.stopPropagation();
+										instance.hide();
+									}
+								};
+
+								return {
+									onMount: () => document.addEventListener('keydown', onKeyDown),
+									onHide: () => document.removeEventListener('keydown', onKeyDown),
+									onDestroy: () => document.removeEventListener('keydown', onKeyDown)
+								};
+							}
+						}
+					],
+					...tippyOptions
+				});
+			}
+		}
+	} else if (tooltipInstance && content === '') {
+		destroyInstance();
+	}
+
+	onDestroy(() => {
+		destroyInstance();
 	});
 </script>
 
-<div bind:this={tooltipElement} aria-label={DOMPurify.sanitize(content)} class={className}>
+<!-- svelte-ignore a11y-no-static-element-interactions -->
+<svelte:element this={as} bind:this={tooltipElement} class={className} on:click={onClick}>
 	<slot />
-</div>
+</svelte:element>
+
+<slot name="tooltip"></slot>

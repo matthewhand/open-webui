@@ -1,39 +1,168 @@
 <script lang="ts">
-	import { onMount, getContext, tick } from 'svelte';
-	import { models, tools, functions, knowledge as knowledgeCollections, user } from '$lib/stores';
+	import { getPageContext, onTabLeave } from '$lib/utils/page';
+	const { goto } = getPageContext();
+
+	import Comments from '$lib/components/comments/Comments.svelte';
+	import type { CommentsRequest } from '$lib/components/comments/CommentsPanel.svelte';
+	let comments: CommentsRequest | null = null;
+	import CommentButton from '$lib/components/comments/CommentButton.svelte';
+	import ModelSettingsLabel from './ModelSettingsLabel.svelte';
+	import { toast } from 'svelte-sonner';
+	import { v4 as uuidv4 } from 'uuid';
+	import { beforeNavigate } from '$app/navigation';
+	import { getModels } from '$lib/apis';
+	import ModelHistory from './ModelHistory.svelte';
+	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
+	import DiffEditorModal from '$lib/components/common/DiffEditorModal.svelte';
+
+	import { onMount, onDestroy, getContext, tick } from 'svelte';
+	import {
+		baseModels,
+		config,
+		models,
+		tools,
+		functions,
+		user,
+		settings,
+		visibleControls
+	} from '$lib/stores';
+	import { WEBUI_BASE_URL, DEFAULT_CAPABILITIES } from '$lib/constants';
+
+	import { getTools } from '$lib/apis/tools';
+	import { getSkills } from '$lib/apis/skills';
+	import { getFunctions } from '$lib/apis/functions';
+	import { getModelsDefaults } from '$lib/apis/configs';
+	import { getLanguages } from '$lib/i18n';
+	import {
+		getBaseModelTags,
+		updateModelAccessGrants,
+		getModelTags,
+		type ModelHistoryEntry,
+		type ModelSnapshot
+	} from '$lib/apis/models';
+	import { getVoices } from '$lib/apis/audio';
+	import { uploadFile, deleteFileById } from '$lib/apis/files';
 
 	import AdvancedParams from '$lib/components/chat/Settings/Advanced/AdvancedParams.svelte';
+	import ModelControls from '$lib/components/admin/Settings/Models/ModelControls.svelte';
+	import ModelSelector from '$lib/components/chat/ModelSelector/Selector.svelte';
 	import Tags from '$lib/components/common/Tags.svelte';
 	import Knowledge from '$lib/components/workspace/Models/Knowledge.svelte';
 	import ToolsSelector from '$lib/components/workspace/Models/ToolsSelector.svelte';
+	import TypeaheadSelector from './TypeaheadSelector.svelte';
+	import SkillsSelector from '$lib/components/workspace/Models/SkillsSelector.svelte';
 	import FiltersSelector from '$lib/components/workspace/Models/FiltersSelector.svelte';
 	import ActionsSelector from '$lib/components/workspace/Models/ActionsSelector.svelte';
 	import Capabilities from '$lib/components/workspace/Models/Capabilities.svelte';
 	import Textarea from '$lib/components/common/Textarea.svelte';
-	import { getTools } from '$lib/apis/tools';
-	import { getFunctions } from '$lib/apis/functions';
-	import { getKnowledgeBases } from '$lib/apis/knowledge';
 	import AccessControl from '../common/AccessControl.svelte';
-	import { stringify } from 'postcss';
+	import Spinner from '$lib/components/common/Spinner.svelte';
+	import ChevronLeft from '$lib/components/icons/ChevronLeft.svelte';
+	import ChevronRight from '$lib/components/icons/ChevronRight.svelte';
+	import ModelSettingsSection from './ModelSettingsSection.svelte';
+	import ProviderDetails from './ProviderDetails.svelte';
+	import LanguageModeSelect from '$lib/components/common/LanguageModeSelect.svelte';
+	import LocalizedPromptSuggestions from './LocalizedPromptSuggestions.svelte';
+	import PromptSuggestions from './PromptSuggestions.svelte';
+	import TerminalSelector from './TerminalSelector.svelte';
+	import ImageModelSelector from './ImageModelSelector.svelte';
+	import VideoModelSelector from './VideoModelSelector.svelte';
+	import TTSVoiceInput from './TTSVoiceInput.svelte';
+	import VoiceAvatarSettings from './VoiceAvatarSettings.svelte';
+	import Photo from '$lib/components/icons/Photo.svelte';
+	import {
+		avatarAssetIds,
+		type AnimationFiles,
+		type VoiceAvatarConfig
+	} from '$lib/utils/voice-avatar';
+	import AccessControlModal from '../common/AccessControlModal.svelte';
+	import AccessButton from '$lib/components/common/AccessButton.svelte';
+	import { copyToClipboard, extractInputVariables } from '$lib/utils';
+	import {
+		modelControlTranslationSource,
+		pruneEmptyLocaleEntries,
+		resolveLocalizedPromptSuggestions
+	} from '$lib/utils/localizedContent';
 
-	const i18n = getContext('i18n');
+	const i18n: any = getContext('i18n');
+	const formId = `model-editor-${uuidv4()}`;
 
-	export let onSubmit: Function;
+	export let onSubmit: Function = () => {};
+	export let onAccessUpdate: Function = () => {};
+	export let readOnly = false;
 	export let onBack: null | Function = null;
 
-	export let model = null;
+	export let model: any = null;
+	export let providerModel: unknown = null;
 	export let edit = false;
+	export let admin = false;
 
 	export let preset = true;
 
 	let loading = false;
+	let historyMenu: ModelHistory;
+	let selectedVersion: (ModelHistoryEntry & { snapshot: ModelSnapshot }) | null = null;
+	let selectingVersion = false;
+	let promotingVersion = false;
+	$: historical = !!selectedVersion || selectingVersion;
+	let commitMessage = '';
+	let savedDraft = '';
+	let defaultMeta: Record<string, any> = {};
+	let defaultFunctionCalling: string | null = null;
+	let allowNavigation = false;
+	let showDiscard = false;
+	let afterDiscard: (() => void) | null = null;
+	$: configurationChanged =
+		!!savedDraft &&
+		(JSON.stringify(modelInfo) !== savedDraft ||
+			!!backgroundFile ||
+			!!avatarFile ||
+			Object.keys(animationFiles).length > 0);
+	$: dirty = configurationChanged || (!!savedDraft && !!commitMessage);
+	const discardThen = (action: () => void) => {
+		if (!dirty) return action();
+		afterDiscard = action;
+		showDiscard = true;
+	};
+	let cancelDiscard: (() => void) | null = null;
+	onTabLeave(() => {
+		if (readOnly || !dirty || allowNavigation) return true;
+		return new Promise<boolean>((resolve) => {
+			cancelDiscard = () => resolve(false);
+			discardThen(() => resolve(true));
+		});
+	});
+	beforeNavigate(({ cancel, to, willUnload }) => {
+		if (readOnly || !dirty || allowNavigation) return;
+		cancel();
+		if (!willUnload && to)
+			discardThen(() => {
+				allowNavigation = true;
+				goto(to.url.href);
+			});
+	});
+
+	let voiceAvatar: VoiceAvatarConfig | null = null;
+	let avatarFile: File | null = null;
+	let animationFiles: AnimationFiles = {};
+	let backgroundFile: File | null = null;
+	let backgroundInput: HTMLInputElement;
+	let backgroundPreview: string | null = null;
+	const clearBackgroundPreview = () => {
+		if (backgroundPreview) URL.revokeObjectURL(backgroundPreview);
+		backgroundPreview = null;
+	};
+	onDestroy(clearBackgroundPreview);
 	let success = false;
 
 	let filesInputElement;
 	let inputFiles;
 
+	let showSystemPrompt = true;
 	let showAdvanced = false;
 	let showPreview = false;
+	let customPromptDraft: any[] | null = null;
+	let showAccessControlModal = false;
 
 	let loaded = false;
 
@@ -43,6 +172,10 @@
 
 	let id = '';
 	let name = '';
+	let languages: { code: string; title: string }[] = [];
+	let editingLocale = '';
+
+	let enableDescription = true;
 
 	$: if (!edit) {
 		if (name) {
@@ -53,13 +186,50 @@
 		}
 	}
 
+	let system = '';
+	let showComparison = false;
+	let comparison: {
+		id: string;
+		modelId: string | undefined;
+		versionId: string | null | undefined;
+		content: string;
+	} | null = null;
+	const compareRevision = () => {
+		if (!loaded || readOnly || historical || loading || promotingVersion) return;
+		comparison = { id, modelId: model?.id, versionId: model?.version_id, content: system };
+		showComparison = true;
+	};
+	const applyComparison = (content: string) => {
+		if (
+			!comparison ||
+			readOnly ||
+			historical ||
+			loading ||
+			promotingVersion ||
+			comparison.id !== id ||
+			comparison.modelId !== model?.id ||
+			comparison.versionId !== model?.version_id ||
+			comparison.content !== system
+		)
+			throw new Error($i18n.t('The model has changed. Reopen the comparison before applying.'));
+		system = content;
+		showSystemPrompt = true;
+	};
 	let info = {
 		id: '',
 		base_model_id: null,
 		name: '',
 		meta: {
-			profile_image_url: '/static/favicon.png',
+			// LICENSE covers this Open WebUI fallback logo.
+			// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+			// https://docs.openwebui.com/license.
+			profile_image_url: `${WEBUI_BASE_URL}/static/favicon.png`,
+			background_image_url: null as string | null,
+			voice: undefined as { voice?: string } | undefined,
+			voice_avatar: null as VoiceAvatarConfig | null,
+			subagents: undefined as { model_ids: string[] } | undefined,
 			description: '',
+			i18n: {} as Record<string, Record<string, any>>,
 			suggestion_prompts: null,
 			tags: []
 		},
@@ -68,131 +238,512 @@
 		}
 	};
 
-	let params = {};
-	let capabilities = {
-		vision: true,
-		usage: undefined,
-		citations: true
+	let params: Record<string, any> = {
+		system: ''
 	};
+	$: reportedModel =
+		providerModel ??
+		$baseModels.find((entry) => entry.id === (info.base_model_id || id)) ??
+		(info.base_model_id ? null : model);
+
+	$: modifiedParamCount = Object.entries(params).reduce((count, [key, value]) => {
+		if (key === 'system' || key === 'model_controls') return count;
+		if (key === 'custom_params') {
+			return count + Object.keys(value ?? {}).filter((name) => name.trim()).length;
+		}
+		return count + (value != null && value !== '' ? 1 : 0);
+	}, 0);
 
 	let knowledge = [];
 	let toolIds = [];
+	let subagents = { model_ids: [] as string[] };
+	let skillIds = [];
+	let skillsList = [];
+
 	let filterIds = [];
+	let defaultFilterIds = [];
+
+	let capabilities = { ...DEFAULT_CAPABILITIES };
+	let defaultFeatureIds = [];
+	let builtinTools: Record<string, boolean> = {};
+
 	let actionIds = [];
+	let accessGrants: any[] = [];
+	let terminalId = '';
+	let imageModelId = '';
+	let videoModelId = '';
+	$: hasTerminal = $config?.features?.enable_terminal_servers || $config?.features?.tether;
+	let tts = { voice: '' };
+	let voice = { voice: '' };
+	export let suggestionTags: { name: string }[] = [];
+	let voices: { id: string; name?: string }[] = [];
 
-	let accessControl = {};
+	$: translatedLocales = Object.entries(info?.meta?.i18n ?? {})
+		.filter(([_, value]: [string, any]) => Object.keys(value ?? {}).length > 0)
+		.map(([locale]) => locale);
+	$: editingLocaleLabel = languages.find((language) => language.code === editingLocale)?.title;
 
-	const addUsage = (base_model_id) => {
-		const baseModel = $models.find((m) => m.id === base_model_id);
+	$: localizedField = (field: string) => info?.meta?.i18n?.[editingLocale]?.[field] ?? '';
+	const setLocalizedField = (field: string, value: string) => {
+		if (!editingLocale) return;
 
-		if (baseModel) {
-			if (baseModel.owned_by === 'openai') {
-				capabilities.usage = baseModel?.meta?.capabilities?.usage ?? false;
-			} else {
-				delete capabilities.usage;
+		info.meta.i18n = {
+			...(info.meta.i18n ?? {}),
+			[editingLocale]: {
+				...(info.meta.i18n?.[editingLocale] ?? {}),
+				[field]: value
 			}
-			capabilities = capabilities;
-		}
+		};
+		info = info;
 	};
 
-	const submitHandler = async () => {
-		loading = true;
+	const clearLocalizedField = (field: string) => {
+		if (!editingLocale || !info.meta.i18n?.[editingLocale]) return;
 
-		info.id = id;
-		info.name = name;
+		const nextLocale = { ...info.meta.i18n[editingLocale] };
+		delete nextLocale[field];
 
-		info.access_control = accessControl;
-		info.meta.capabilities = capabilities;
-
-		if (knowledge.length > 0) {
-			info.meta.knowledge = knowledge;
+		const nextI18n = { ...(info.meta.i18n ?? {}) };
+		if (Object.keys(nextLocale).length === 0) {
+			delete nextI18n[editingLocale];
 		} else {
-			if (info.meta.knowledge) {
-				delete info.meta.knowledge;
+			nextI18n[editingLocale] = nextLocale;
+		}
+
+		info.meta.i18n = nextI18n;
+		info = info;
+	};
+
+	const chatVariableKeyRegex = /^[a-z][a-z0-9_]*$/;
+	const getChatVariablesPreview = (prompt: string) => {
+		const variables = extractInputVariables(prompt);
+		const warnings: string[] = [];
+		const seenDefinitions: Record<string, string> = {};
+		const typedRegex = /{{\s*chat\.variables\.([a-zA-Z0-9_.-]+)\s*\|\s*([^}]*)\s*}}/g;
+		const typedUserRegex = /{{\s*user\.variables\.([a-zA-Z0-9_.-]+)\s*\|\s*([^}]*)\s*}}/g;
+
+		for (const match of prompt.matchAll(typedRegex)) {
+			const key = match[1];
+			const definition = match[2].trim();
+			if (seenDefinitions[key] && seenDefinitions[key] !== definition) {
+				warnings.push(`${key} has conflicting duplicate definitions`);
+			}
+			seenDefinitions[key] = definition;
+		}
+
+		const fields = Object.entries(variables)
+			.filter(([name]) => name.startsWith('chat.variables.'))
+			.map(([name, field]) => ({ key: name.replace('chat.variables.', ''), ...(field as any) }));
+		const userFields = Object.entries(variables)
+			.filter(([name]) => name.startsWith('user.variables.'))
+			.map(([name]) => ({ key: name.replace('user.variables.', '') }));
+
+		for (const match of prompt.matchAll(typedUserRegex)) {
+			warnings.push(`${match[1]} uses metadata, but User Variables are configured by each user`);
+		}
+
+		for (const field of fields) {
+			const key = field.key;
+			if (!chatVariableKeyRegex.test(key)) {
+				warnings.push(`${key} must be lowercase snake case`);
+				continue;
+			}
+
+			if (
+				field.type === 'select' &&
+				(!Array.isArray(field.options) || field.options.length === 0)
+			) {
+				warnings.push(`${key} select needs options=[...]`);
 			}
 		}
 
-		if (toolIds.length > 0) {
-			info.meta.toolIds = toolIds;
+		for (const field of userFields) {
+			if (!chatVariableKeyRegex.test(field.key)) {
+				warnings.push(`${field.key} must be lowercase snake case`);
+			}
+		}
+
+		return { fields, userFields, warnings };
+	};
+
+	$: chatVariablesPreview = getChatVariablesPreview(system ?? '');
+
+	$: includeHidden =
+		$user?.role === 'admin' || ($user?.permissions?.workspace?.models_hidden ?? false);
+
+	const getBaseModelItems = (models: any[] = []) => {
+		const currentModelId = (model as any)?.id;
+
+		return models
+			.filter(
+				(baseModel) =>
+					baseModel.owned_by !== 'terminal' &&
+					(!currentModelId ||
+						baseModel.id !== currentModelId ||
+						(edit && baseModel.id === info.base_model_id)) &&
+					(!baseModel?.preset || (edit && baseModel.id === info.base_model_id)) &&
+					baseModel?.owned_by !== 'arena' &&
+					!(baseModel?.owner_id ?? false) &&
+					(includeHidden ||
+						!(baseModel?.info?.meta?.hidden ?? false) ||
+						baseModel.id === info.base_model_id)
+			)
+			.map((baseModel) => ({
+				value: baseModel.id,
+				label: baseModel.name,
+				model: baseModel
+			}));
+	};
+
+	const loadSuggestionTags = async () => {
+		const res: string[] = await (preset ? getModelTags : getBaseModelTags)(
+			localStorage.token
+		).catch(() => []);
+		suggestionTags = res.map((tag) => ({ name: tag }));
+	};
+
+	const loadVoices = async () => {
+		const res = await getVoices(localStorage.token).catch(() => null);
+		voices = res?.voices ?? [];
+	};
+
+	const toModelKnowledgeReference = (item: any) => {
+		if (!item || typeof item !== 'object') {
+			return item;
+		}
+
+		return Object.fromEntries(
+			[
+				'id',
+				'name',
+				'type',
+				'description',
+				'context',
+				'legacy',
+				'collection_name',
+				'collection_names'
+			]
+				.filter((key) => item[key] !== undefined && item[key] !== null && item[key] !== '')
+				.map((key) => [key, item[key]])
+		);
+	};
+
+	$: modelInfo = (() => {
+		const modelInfo = structuredClone(info);
+
+		modelInfo.id = id;
+		modelInfo.meta.voice_avatar = voiceAvatar;
+		modelInfo.name = name;
+
+		modelInfo.params = { ...modelInfo.params, ...params };
+
+		if (edit) delete modelInfo.access_grants;
+		else modelInfo.access_grants = accessGrants;
+		modelInfo.meta.capabilities = capabilities;
+		if (subagents.model_ids.length > 0) {
+			modelInfo.meta.subagents = { model_ids: subagents.model_ids };
 		} else {
-			if (info.meta.toolIds) {
-				delete info.meta.toolIds;
+			delete modelInfo.meta.subagents;
+		}
+
+		if (enableDescription) {
+			modelInfo.meta.description =
+				(modelInfo.meta.description ?? '').trim() === '' ? null : modelInfo.meta.description;
+		} else {
+			modelInfo.meta.description = null;
+		}
+
+		if (knowledge.length > 0) {
+			modelInfo.meta.knowledge = knowledge.map(toModelKnowledgeReference);
+		} else {
+			if (modelInfo.meta.knowledge) {
+				delete modelInfo.meta.knowledge;
+			}
+		}
+
+		if (toolIds.length > 0 || defaultMeta.toolIds?.length > 0) {
+			modelInfo.meta.toolIds = toolIds;
+		} else {
+			if (modelInfo.meta.toolIds) {
+				delete modelInfo.meta.toolIds;
+			}
+		}
+
+		if (skillIds.length > 0) {
+			modelInfo.meta.skillIds = skillIds;
+		} else {
+			if (modelInfo.meta.skillIds) {
+				delete modelInfo.meta.skillIds;
 			}
 		}
 
 		if (filterIds.length > 0) {
-			info.meta.filterIds = filterIds;
+			modelInfo.meta.filterIds = filterIds;
 		} else {
-			if (info.meta.filterIds) {
-				delete info.meta.filterIds;
+			if (modelInfo.meta.filterIds) {
+				delete modelInfo.meta.filterIds;
+			}
+		}
+
+		if (defaultFilterIds.length > 0) {
+			modelInfo.meta.defaultFilterIds = defaultFilterIds;
+		} else {
+			if (modelInfo.meta.defaultFilterIds) {
+				delete modelInfo.meta.defaultFilterIds;
 			}
 		}
 
 		if (actionIds.length > 0) {
-			info.meta.actionIds = actionIds;
+			modelInfo.meta.actionIds = actionIds;
 		} else {
-			if (info.meta.actionIds) {
-				delete info.meta.actionIds;
+			if (modelInfo.meta.actionIds) {
+				delete modelInfo.meta.actionIds;
 			}
 		}
 
-		info.params.stop = params.stop ? params.stop.split(',').filter((s) => s.trim()) : null;
-		Object.keys(info.params).forEach((key) => {
-			if (info.params[key] === '' || info.params[key] === null) {
-				delete info.params[key];
+		if (defaultFeatureIds.length > 0 || defaultMeta.defaultFeatureIds?.length > 0) {
+			modelInfo.meta.defaultFeatureIds = defaultFeatureIds;
+		} else {
+			if (modelInfo.meta.defaultFeatureIds) {
+				delete modelInfo.meta.defaultFeatureIds;
+			}
+		}
+
+		if (
+			Object.keys(builtinTools).length > 0 ||
+			Object.keys(defaultMeta.builtinTools ?? {}).length > 0
+		) {
+			modelInfo.meta.builtinTools = builtinTools;
+		} else {
+			if (modelInfo.meta.builtinTools) {
+				delete modelInfo.meta.builtinTools;
+			}
+		}
+
+		modelInfo.meta.i18n = pruneEmptyLocaleEntries(modelInfo.meta.i18n);
+		if (Object.keys(modelInfo.meta.i18n).length === 0) {
+			delete modelInfo.meta.i18n;
+		}
+
+		if (terminalId || defaultMeta.terminalId) {
+			modelInfo.meta.terminalId = terminalId;
+		} else {
+			if (modelInfo.meta.terminalId) {
+				delete modelInfo.meta.terminalId;
+			}
+		}
+
+		if (imageModelId || defaultMeta.imageModelId) {
+			modelInfo.meta.imageModelId = imageModelId;
+		} else if (modelInfo.meta.imageModelId) {
+			delete modelInfo.meta.imageModelId;
+		}
+
+		if (videoModelId || defaultMeta.videoModelId) {
+			modelInfo.meta.videoModelId = videoModelId;
+		} else if (modelInfo.meta.videoModelId) {
+			delete modelInfo.meta.videoModelId;
+		}
+
+		if (voice.voice.trim()) modelInfo.meta.voice = { voice: voice.voice.trim() };
+		else delete modelInfo.meta.voice;
+
+		if (tts.voice !== '') {
+			if (!modelInfo.meta.tts) modelInfo.meta.tts = {};
+			modelInfo.meta.tts.voice = tts.voice;
+		} else {
+			if (modelInfo.meta.tts?.voice) {
+				delete modelInfo.meta.tts.voice;
+				if (Object.keys(modelInfo.meta.tts).length === 0) {
+					delete modelInfo.meta.tts;
+				}
+			}
+		}
+
+		modelInfo.params.system = system.trim() === '' ? null : system;
+		modelInfo.params.stop = params.stop
+			? (typeof params.stop === 'string' ? params.stop.split(',') : params.stop).filter((s) =>
+					s.trim()
+				)
+			: null;
+		Object.keys(modelInfo.params).forEach((key) => {
+			if (modelInfo.params[key] === '' || modelInfo.params[key] === null) {
+				delete modelInfo.params[key];
 			}
 		});
 
-		await onSubmit(info);
+		return modelInfo;
+	})();
 
-		loading = false;
-		success = false;
+	const preventReadOnlyEdit = (event: Event) => {
+		if (readOnly && event.target instanceof Element && event.target.closest('fieldset:disabled')) {
+			if (event instanceof KeyboardEvent && event.key === 'Tab') return;
+			event.preventDefault();
+			event.stopPropagation();
+		}
 	};
 
-	onMount(async () => {
-		await tools.set(await getTools(localStorage.token));
-		await functions.set(await getFunctions(localStorage.token));
-		await knowledgeCollections.set(await getKnowledgeBases(localStorage.token));
+	const submitHandler = async () => {
+		if (readOnly || loading || historical || (edit && !configurationChanged)) return;
+		loading = true;
 
-		// Scroll to top 'workspace-container' element
-		const workspaceContainer = document.getElementById('workspace-container');
-		if (workspaceContainer) {
-			workspaceContainer.scrollTop = 0;
+		if (id === '') {
+			toast.error($i18n.t('Model ID is required.'));
+			loading = false;
+
+			return;
 		}
 
+		if (/\s/.test(id)) {
+			toast.error($i18n.t('Model ID cannot contain whitespace.'));
+			loading = false;
+
+			return;
+		}
+
+		if (name === '') {
+			toast.error($i18n.t('Model Name is required.'));
+			loading = false;
+
+			return;
+		}
+
+		if (preset && !info.base_model_id) {
+			toast.error($i18n.t('Base Model is required.'));
+			loading = false;
+
+			return;
+		}
+
+		if (knowledge.some((item) => item.status === 'uploading')) {
+			toast.error($i18n.t('Please wait until all files are uploaded.'));
+			loading = false;
+
+			return;
+		}
+
+		info = structuredClone(modelInfo);
+
+		let saveAttempted = false;
+		let uploadedId: string | null = null;
+		const previousBackground = info.meta.background_image_url;
+		const previousAvatar = structuredClone(info.meta.voice_avatar);
+		const uploadedAvatarIds: string[] = [];
+
+		try {
+			if (backgroundFile) {
+				const uploaded = await uploadFile(localStorage.token, backgroundFile, null, false, false);
+				if (!uploaded?.id) throw new Error($i18n.t('Failed to upload background image.'));
+				uploadedId = uploaded.id;
+				info.meta.background_image_url = `/api/v1/files/${uploaded.id}/content`;
+			}
+			if (avatarFile && info.meta.voice_avatar) {
+				const uploaded = await uploadFile(localStorage.token, avatarFile, null, false, false);
+				if (!uploaded?.id) throw new Error($i18n.t('Failed to upload avatar.'));
+				uploadedAvatarIds.push(uploaded.id);
+				info.meta.voice_avatar = { ...info.meta.voice_avatar, file_id: uploaded.id };
+			}
+			if (info.meta.voice_avatar) {
+				const avatar = info.meta.voice_avatar;
+				const replacements = new Map<string, string>();
+				for (const id of new Set(avatarAssetIds(avatar))) {
+					if (!animationFiles[id]) continue;
+					const uploaded = await uploadFile(
+						localStorage.token,
+						animationFiles[id],
+						null,
+						false,
+						false
+					);
+					if (!uploaded?.id) throw new Error($i18n.t('Failed to upload animation.'));
+					uploadedAvatarIds.push(uploaded.id);
+					replacements.set(id, uploaded.id);
+				}
+				for (const asset of [...Object.values(avatar.states ?? {}), ...(avatar.gestures ?? [])]) {
+					asset.file_id = replacements.get(asset.file_id) ?? asset.file_id;
+				}
+			}
+			saveAttempted = true;
+			allowNavigation = true;
+			const saved = await onSubmit({ ...info, commit_message: commitMessage || undefined });
+			if (!saved) throw new Error($i18n.t('Failed to save model'));
+			if (typeof saved === 'object') await loadModel(saved);
+			commitMessage = '';
+			backgroundFile = null;
+			avatarFile = null;
+			animationFiles = {};
+			voiceAvatar = info.meta.voice_avatar;
+			clearBackgroundPreview();
+			await tick();
+			savedDraft = JSON.stringify(modelInfo);
+			allowNavigation = false;
+		} catch (error: any) {
+			info.meta.background_image_url = previousBackground;
+			info.meta.voice_avatar = previousAvatar;
+			allowNavigation = false;
+			// A lost response can follow a committed version. Keep its uploads until the outcome is known.
+			if (!saveAttempted) {
+				for (const fileId of [...uploadedAvatarIds, ...(uploadedId ? [uploadedId] : [])]) {
+					await deleteFileById(localStorage.token, fileId).catch(() => {});
+				}
+			}
+
+			toast.error(`${error?.detail ?? error?.message ?? error}`);
+		} finally {
+			loading = false;
+			success = false;
+		}
+	};
+
+	const loadModel = async (value: any) => {
+		customPromptDraft = null;
+		model = value ? structuredClone(value) : null;
+		backgroundFile = null;
+		avatarFile = null;
+		animationFiles = {};
+		commitMessage = '';
+		editingLocale = '';
+		clearBackgroundPreview();
 		if (model) {
-			console.log(model);
+			model.meta ??= {};
 			name = model.name;
+			voiceAvatar = model.meta?.voice_avatar ? structuredClone(model.meta.voice_avatar) : null;
 			await tick();
 
 			id = model.id;
 
+			enableDescription = model?.meta?.description !== null;
+
 			if (model.base_model_id) {
-				const base_model = $models
-					.filter((m) => !m?.preset && !(m?.arena ?? false))
+				const base_model = $baseModels
+					.filter(
+						(m) =>
+							m.owned_by !== 'terminal' &&
+							((!m?.preset && !(m?.arena ?? false)) || (edit && m.id === model.base_model_id))
+					)
 					.find((m) => [model.base_model_id, `${model.base_model_id}:latest`].includes(m.id));
 
 				console.log('base_model', base_model);
 
 				if (base_model) {
 					model.base_model_id = base_model.id;
-				} else {
+				} else if (!edit) {
 					model.base_model_id = null;
 				}
 			}
 
-			params = { ...params, ...model?.params };
+			system = model?.params?.system ?? '';
+			showSystemPrompt = !system.trim();
+
+			params = { system: '', ...model?.params };
 			params.stop = params?.stop
 				? (typeof params.stop === 'string' ? params.stop.split(',') : (params?.stop ?? [])).join(
 						','
 					)
 				: null;
 
-			toolIds = model?.meta?.toolIds ?? [];
-			filterIds = model?.meta?.filterIds ?? [];
-			actionIds = model?.meta?.actionIds ?? [];
 			knowledge = (model?.meta?.knowledge ?? []).map((item) => {
-				if (item?.collection_name) {
+				if (item?.collection_name && item?.type !== 'file') {
 					return {
 						id: item.collection_name,
 						name: item.name,
@@ -209,562 +760,1217 @@
 					return item;
 				}
 			});
-			capabilities = { ...capabilities, ...(model?.meta?.capabilities ?? {}) };
 
-			if ('access_control' in model) {
-				accessControl = model.access_control;
-			} else {
-				accessControl = {};
-			}
+			toolIds = model?.meta?.toolIds ?? defaultMeta.toolIds ?? [];
+			subagents = { model_ids: model?.meta?.subagents?.model_ids ?? [] };
+			skillIds = model?.meta?.skillIds ?? [];
+			filterIds = model?.meta?.filterIds ?? [];
+			defaultFilterIds = model?.meta?.defaultFilterIds ?? [];
+			actionIds = model?.meta?.actionIds ?? [];
 
-			console.log(model?.access_control);
-			console.log(accessControl);
-
-			info = {
-				...info,
-				...JSON.parse(
-					JSON.stringify(
-						model
-							? model
-							: {
-									id: model.id,
-									name: model.name
-								}
-					)
-				)
+			// Per-model overrides take precedence over admin defaults
+			capabilities = {
+				...DEFAULT_CAPABILITIES,
+				...(defaultMeta.capabilities ?? {}),
+				...(model?.meta?.capabilities ?? {})
 			};
+			defaultFeatureIds = model?.meta?.defaultFeatureIds ?? defaultMeta.defaultFeatureIds ?? [];
+			builtinTools = model?.meta?.builtinTools ?? defaultMeta.builtinTools ?? {};
+			terminalId = model?.meta?.terminalId ?? defaultMeta.terminalId ?? '';
+			imageModelId = model?.meta?.imageModelId ?? defaultMeta.imageModelId ?? '';
+			videoModelId = model?.meta?.videoModelId ?? defaultMeta.videoModelId ?? '';
+			tts = { voice: model?.meta?.tts?.voice ?? '' };
+			voice = { voice: model?.meta?.voice?.voice ?? '' };
 
-			console.log(model);
+			accessGrants = model?.access_grants ?? [];
+
+			info = structuredClone(model);
+			info.meta.i18n = info.meta.i18n ?? {};
 		}
 
+		await tick();
+		savedDraft = JSON.stringify(modelInfo);
+	};
+	const productionHandler = async (value: any) => {
+		await loadModel(value);
+		try {
+			models.set(await getModels(localStorage.token));
+		} catch (error) {
+			toast.error(`${error}`);
+		}
+	};
+
+	onMount(async () => {
+		languages = await getLanguages();
+		await tools.set((await getTools(localStorage.token).catch(() => null)) ?? []);
+		skillsList = (await getSkills(localStorage.token).catch(() => null)) ?? [];
+		if (!$functions) {
+			await functions.set(await getFunctions(localStorage.token));
+		}
+		if (suggestionTags.length === 0) {
+			await loadSuggestionTags();
+		}
+		if (voices.length === 0) {
+			await loadVoices();
+		}
+
+		// Fetch admin-configured default model metadata so the editor
+		// reflects the actual defaults rather than hardcoded values
+		const modelsConfig = await getModelsDefaults(localStorage.token).catch(() => null);
+		defaultMeta = modelsConfig?.DEFAULT_MODEL_METADATA ?? {};
+		defaultFunctionCalling = modelsConfig?.DEFAULT_FUNCTION_CALLING ?? null;
+
+		// Use admin defaults as base, falling back to hardcoded defaults
+		capabilities = { ...DEFAULT_CAPABILITIES, ...(defaultMeta.capabilities ?? {}) };
+		defaultFeatureIds = defaultMeta.defaultFeatureIds ?? [];
+		builtinTools = defaultMeta.builtinTools ?? {};
+		toolIds = defaultMeta.toolIds ?? [];
+		terminalId = defaultMeta.terminalId ?? '';
+		imageModelId = defaultMeta.imageModelId ?? '';
+		videoModelId = defaultMeta.videoModelId ?? '';
+
+		// Scroll to top 'workspace-container' element
+		const workspaceContainer = document.getElementById('workspace-container');
+		if (workspaceContainer) {
+			workspaceContainer.scrollTop = 0;
+		}
+
+		await loadModel(model);
 		loaded = true;
 	});
 </script>
 
-{#if loaded}
-	{#if onBack}
-		<button
-			class="flex space-x-1"
-			on:click={() => {
-				onBack();
-			}}
-		>
-			<div class=" self-center">
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 20 20"
-					fill="currentColor"
-					class="h-4 w-4"
-				>
-					<path
-						fill-rule="evenodd"
-						d="M17 10a.75.75 0 01-.75.75H5.612l4.158 3.96a.75.75 0 11-1.04 1.08l-5.5-5.25a.75.75 0 010-1.08l5.5-5.25a.75.75 0 111.04 1.08L5.612 9.25H16.25A.75.75 0 0117 10z"
-						clip-rule="evenodd"
-					/>
-				</svg>
-			</div>
-			<div class=" self-center text-sm font-medium">{'Back'}</div>
-		</button>
-	{/if}
-
-	<div class="w-full max-h-full flex justify-center">
+<Comments bind:view={comments} resourceType={admin || readOnly ? null : 'model'} modal={admin}>
+	{#if loaded}
+		<DiffEditorModal
+			bind:show={showComparison}
+			initialContent={comparison?.content ?? ''}
+			filePath="system-prompt.md"
+			onApply={applyComparison}
+		/>
 		<input
-			bind:this={filesInputElement}
-			bind:files={inputFiles}
+			bind:this={backgroundInput}
 			type="file"
+			accept="image/png,image/jpeg,image/webp,image/gif"
 			hidden
-			accept="image/*"
-			on:change={() => {
-				let reader = new FileReader();
-				reader.onload = (event) => {
-					let originalImageUrl = `${event.target.result}`;
-
-					const img = new Image();
-					img.src = originalImageUrl;
-
-					img.onload = function () {
-						const canvas = document.createElement('canvas');
-						const ctx = canvas.getContext('2d');
-
-						// Calculate the aspect ratio of the image
-						const aspectRatio = img.width / img.height;
-
-						// Calculate the new width and height to fit within 100x100
-						let newWidth, newHeight;
-						if (aspectRatio > 1) {
-							newWidth = 250 * aspectRatio;
-							newHeight = 250;
-						} else {
-							newWidth = 250;
-							newHeight = 250 / aspectRatio;
-						}
-
-						// Set the canvas size
-						canvas.width = 250;
-						canvas.height = 250;
-
-						// Calculate the position to center the image
-						const offsetX = (250 - newWidth) / 2;
-						const offsetY = (250 - newHeight) / 2;
-
-						// Draw the image on the canvas
-						ctx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
-
-						// Get the base64 representation of the compressed image
-						const compressedSrc = canvas.toDataURL();
-
-						// Display the compressed image
-						info.meta.profile_image_url = compressedSrc;
-
-						inputFiles = null;
-					};
-				};
-
-				if (
-					inputFiles &&
-					inputFiles.length > 0 &&
-					['image/gif', 'image/webp', 'image/jpeg', 'image/png', 'image/svg+xml'].includes(
-						inputFiles[0]['type']
-					)
-				) {
-					reader.readAsDataURL(inputFiles[0]);
-				} else {
-					console.log(`Unsupported File Type '${inputFiles[0]['type']}'.`);
-					inputFiles = null;
+			on:change={async () => {
+				const selected = backgroundInput.files?.[0];
+				backgroundInput.value = '';
+				if (!selected || readOnly || loading) return;
+				loading = true;
+				const candidate = URL.createObjectURL(selected);
+				try {
+					if (!['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(selected.type)) {
+						throw new Error($i18n.t('Background image must be PNG, JPEG, WebP, or GIF.'));
+					}
+					if (selected.size > 5 * 1024 * 1024)
+						throw new Error($i18n.t('Background image must be at most 5 MiB.'));
+					const image = new Image();
+					image.src = candidate;
+					await image.decode();
+					if (image.naturalWidth * image.naturalHeight > 25_000_000) {
+						throw new Error($i18n.t('Background image must be at most 25 megapixels.'));
+					}
+					clearBackgroundPreview();
+					backgroundPreview = candidate;
+					backgroundFile = selected;
+				} catch (error) {
+					URL.revokeObjectURL(candidate);
+					toast.error(
+						error instanceof Error ? error.message : $i18n.t('Invalid background image.')
+					);
+				} finally {
+					loading = false;
+				}
+			}}
+		/>
+		<ConfirmDialog
+			bind:show={showDiscard}
+			on:cancel={() => {
+				cancelDiscard?.();
+				cancelDiscard = null;
+				afterDiscard = null;
+			}}
+			title={$i18n.t('Discard unsaved changes?')}
+			message={$i18n.t('Your unsaved changes will be lost.')}
+			on:confirm={() => {
+				allowNavigation = true;
+				afterDiscard?.();
+			}}
+		/>
+		<AccessControlModal
+			disabled={loading}
+			bind:show={showAccessControlModal}
+			bind:accessGrants
+			accessRoles={preset ? ['read', 'write'] : ['read']}
+			share={$user?.permissions?.sharing?.models || $user?.role === 'admin'}
+			sharePublic={$user?.permissions?.sharing?.public_models || $user?.role === 'admin'}
+			shareUsers={($user?.permissions?.access_grants?.allow_users ?? true) ||
+				$user?.role === 'admin'}
+			allowGroups={($user?.permissions?.access_grants?.allow_groups ?? true) ||
+				$user?.role === 'admin'}
+			onChange={async (grants) => {
+				if (edit && model?.id) {
+					loading = true;
+					try {
+						const saved = await updateModelAccessGrants(
+							localStorage.token,
+							model.id,
+							model.name,
+							grants
+						);
+						model.access_grants = structuredClone(saved.access_grants);
+						accessGrants = structuredClone(saved.access_grants);
+						onAccessUpdate(saved);
+						toast.success($i18n.t('Saved'));
+					} catch (error) {
+						accessGrants = structuredClone(model.access_grants ?? []);
+						toast.error(`${error?.detail ?? error}`);
+					} finally {
+						loading = false;
+					}
 				}
 			}}
 		/>
 
-		{#if !edit || (edit && model)}
-			<form
-				class="flex flex-col md:flex-row w-full gap-3 md:gap-6"
-				on:submit|preventDefault={() => {
-					submitHandler();
-				}}
-			>
-				<div class="self-center md:self-start flex justify-center my-2 flex-shrink-0">
-					<div class="self-center">
-						<button
-							class="rounded-2xl flex flex-shrink-0 items-center {info.meta.profile_image_url !==
-							'/static/favicon.png'
-								? 'bg-transparent'
-								: 'bg-white'} shadow-xl group relative"
-							type="button"
-							on:click={() => {
-								filesInputElement.click();
-							}}
-						>
-							{#if info.meta.profile_image_url}
-								<img
-									src={info.meta.profile_image_url}
-									alt="model profile"
-									class="rounded-lg size-72 md:size-60 object-cover shrink-0"
-								/>
-							{:else}
-								<img
-									src="/static/favicon.png"
-									alt="model profile"
-									class=" rounded-lg size-72 md:size-60 object-cover shrink-0"
-								/>
-							{/if}
+		<div class="flex h-full min-h-0 w-full flex-col">
+			<div class="flex shrink-0 items-center gap-3" class:px-3={!admin}>
+				{#if onBack}
+					<button
+						class="flex h-6 w-fit shrink-0 items-center gap-1 whitespace-nowrap rounded-md text-xs text-gray-400 transition-colors duration-75 hover:text-gray-700 dark:text-gray-600 dark:hover:text-gray-300"
+						type="button"
+						on:click={() => {
+							discardThen(() => {
+								allowNavigation = true;
+								onBack?.();
+							});
+						}}
+					>
+						<ChevronLeft className="size-3" strokeWidth="2" />
+						<span>{$i18n.t('Back')}</span>
+					</button>
+				{/if}
 
-							<div class="absolute bottom-0 right-0 z-10">
-								<div class="m-1.5">
-									<div
-										class="shadow-xl p-1 rounded-full border-2 border-white bg-gray-800 text-white group-hover:bg-gray-600 transition dark:border-black dark:bg-white dark:group-hover:bg-gray-200 dark:text-black"
-									>
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											viewBox="0 0 16 16"
-											fill="currentColor"
-											class="size-5"
-										>
-											<path
-												fill-rule="evenodd"
-												d="M2 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4Zm10.5 5.707a.5.5 0 0 0-.146-.353l-1-1a.5.5 0 0 0-.708 0L9.354 9.646a.5.5 0 0 1-.708 0L6.354 7.354a.5.5 0 0 0-.708 0l-2 2a.5.5 0 0 0-.146.353V12a.5.5 0 0 0 .5.5h8a.5.5 0 0 0 .5-.5V9.707ZM12 5a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"
-												clip-rule="evenodd"
-											/>
-										</svg>
-									</div>
-								</div>
-							</div>
-
-							<div
-								class="absolute top-0 bottom-0 left-0 right-0 bg-white dark:bg-black rounded-lg opacity-0 group-hover:opacity-20 transition"
-							></div>
-						</button>
-					</div>
-				</div>
-
-				<div class="w-full">
-					<div class="mt-2 my-2 flex flex-col">
-						<div class="flex-1">
-							<div>
-								<input
-									class="text-3xl font-semibold w-full bg-transparent outline-none"
-									placeholder={$i18n.t('Model Name')}
-									bind:value={name}
-									required
-								/>
-							</div>
-						</div>
-
-						<div class="flex-1">
-							<!-- <div class=" text-sm font-semibold">{$i18n.t('Model ID')}*</div> -->
-							<div>
-								<input
-									class="text-xs w-full bg-transparent text-gray-500 outline-none"
-									placeholder={$i18n.t('Model ID')}
-									value={id}
-									disabled={edit}
-									required
-								/>
-							</div>
-						</div>
-					</div>
-
-					{#if preset}
-						<div class="my-1">
-							<div class=" text-sm font-semibold mb-1">{$i18n.t('Base Model (From)')}</div>
-
-							<div>
-								<select
-									class="text-sm w-full bg-transparent outline-none"
-									placeholder="Select a base model (e.g. llama3, gpt-4o)"
-									bind:value={info.base_model_id}
-									on:change={(e) => {
-										addUsage(e.target.value);
-									}}
-									required
-								>
-									<option value={null} class=" text-gray-900"
-										>{$i18n.t('Select a base model')}</option
-									>
-									{#each $models.filter((m) => (model ? m.id !== model.id : true) && !m?.preset && m?.owned_by !== 'arena') as model}
-										<option value={model.id} class=" text-gray-900">{model.name}</option>
-									{/each}
-								</select>
-							</div>
-						</div>
+				{#if edit && model?.version_id && !readOnly}
+					<ModelHistory
+						bind:this={historyMenu}
+						{model}
+						{dirty}
+						bind:selected={selectedVersion}
+						bind:selecting={selectingVersion}
+						bind:promoting={promotingVersion}
+						onProduction={productionHandler}
+					/>
+				{/if}
+				<div class="ms-auto flex shrink-0 items-center gap-1 pr-0.5">
+					{#if edit && model?.id}<CommentButton
+							onComment={(request) => (comments = request)}
+							wrapperClassName="me-2"
+							resource={{ resource_type: 'model', resource_id: model.id }}
+						/>{/if}
+					{#if !historical && !readOnly}
+						<LanguageModeSelect
+							bind:value={editingLocale}
+							{languages}
+							{translatedLocales}
+							className="w-fit"
+						/>
 					{/if}
 
-					<div class="my-1">
-						<div class="mb-1 flex w-full justify-between items-center">
-							<div class=" self-center text-sm font-semibold">{$i18n.t('Description')}</div>
+					{#if !historical && !readOnly && ($user?.permissions?.sharing?.models || $user?.role === 'admin')}
+						<AccessButton on:click={() => (showAccessControlModal = true)} />
+					{/if}
+				</div>
+			</div>
 
-							<button
-								class="p-1 text-xs flex rounded transition"
-								type="button"
-								on:click={() => {
-									if (info.meta.description === null) {
-										info.meta.description = '';
-									} else {
-										info.meta.description = null;
-									}
-								}}
-							>
-								{#if info.meta.description === null}
-									<span class="ml-2 self-center">{$i18n.t('Default')}</span>
-								{:else}
-									<span class="ml-2 self-center">{$i18n.t('Custom')}</span>
-								{/if}
-							</button>
-						</div>
+			{#if selectingVersion}
+				<div class="flex flex-1 justify-center py-8"><Spinner className="size-5" /></div>
+			{:else if selectedVersion}
+				<section aria-label={$i18n.t('Model version preview')} class="min-h-0 flex-1">
+					{#key selectedVersion.id}
+						<svelte:self
+							model={{ id: model.id, ...selectedVersion.snapshot }}
+							edit
+							readOnly
+							{admin}
+							preset={!!selectedVersion.snapshot.base_model_id}
+						/>
+					{/key}
+				</section>
+				<div class="flex shrink-0 justify-end py-2" class:px-1={admin} class:px-3={!admin}>
+					<button
+						type="button"
+						class="flex h-7 items-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+						disabled={promotingVersion}
+						on:click={() => historyMenu.requestPromotion()}
+					>
+						{$i18n.t('Set as Production')}
+					</button>
+				</div>
+			{/if}
+			<div
+				class:hidden={historical}
+				class="min-h-0 w-full flex-1 overflow-y-auto px-1 scrollbar-hover"
+			>
+				<input
+					bind:this={filesInputElement}
+					bind:files={inputFiles}
+					type="file"
+					hidden
+					accept="image/*"
+					on:change={() => {
+						let reader = new FileReader();
+						reader.onload = (event) => {
+							let originalImageUrl = `${event.target?.result}`;
 
-						{#if info.meta.description !== null}
-							<Textarea
-								className=" text-sm w-full bg-transparent outline-none resize-none overflow-y-hidden "
-								placeholder={$i18n.t('Add a short description about what this model does')}
-								rows={3}
-								bind:value={info.meta.description}
-							/>
-						{/if}
-					</div>
+							// For animated formats (gif, webp), skip resizing to preserve animation
+							const fileType = (inputFiles[0] as any)?.['type'];
+							if (fileType === 'image/gif' || fileType === 'image/webp') {
+								info.meta.profile_image_url = originalImageUrl;
+								inputFiles = null;
+								filesInputElement.value = '';
+								return;
+							}
 
-					<div class="my-1">
-						<div class="">
-							<Tags
-								tags={info?.meta?.tags ?? []}
-								on:delete={(e) => {
-									const tagName = e.detail;
-									info.meta.tags = info.meta.tags.filter((tag) => tag.name !== tagName);
-								}}
-								on:add={(e) => {
-									const tagName = e.detail;
-									if (!(info?.meta?.tags ?? null)) {
-										info.meta.tags = [{ name: tagName }];
-									} else {
-										info.meta.tags = [...info.meta.tags, { name: tagName }];
-									}
-								}}
-							/>
-						</div>
-					</div>
+							const img = new Image();
+							img.src = originalImageUrl;
 
-					<div class="my-2">
-						<div class="px-3 py-2 bg-gray-50 dark:bg-gray-950 rounded-lg">
-							<AccessControl bind:accessControl />
-						</div>
-					</div>
+							img.onload = function () {
+								const canvas = document.createElement('canvas');
+								const ctx = canvas.getContext('2d');
 
-					<hr class=" border-gray-50 dark:border-gray-850 my-1.5" />
+								// Calculate the aspect ratio of the image
+								const aspectRatio = img.width / img.height;
 
-					<div class="my-2">
-						<div class="flex w-full justify-between">
-							<div class=" self-center text-sm font-semibold">{$i18n.t('Model Params')}</div>
-						</div>
+								// Calculate the new width and height to fit within 100x100
+								let newWidth, newHeight;
+								if (aspectRatio > 1) {
+									newWidth = 250 * aspectRatio;
+									newHeight = 250;
+								} else {
+									newWidth = 250;
+									newHeight = 250 / aspectRatio;
+								}
 
-						<div class="mt-2">
-							<div class="my-1">
-								<div class=" text-xs font-semibold mb-2">{$i18n.t('System Prompt')}</div>
-								<div>
-									<Textarea
-										className=" text-sm w-full bg-transparent outline-none resize-none overflow-y-hidden "
-										placeholder={`Write your model system prompt content here\ne.g.) You are Mario from Super Mario Bros, acting as an assistant.`}
-										rows={4}
-										bind:value={info.params.system}
-									/>
-								</div>
-							</div>
+								// Set the canvas size
+								canvas.width = 250;
+								canvas.height = 250;
 
-							<div class="flex w-full justify-between">
-								<div class=" self-center text-xs font-semibold">
-									{$i18n.t('Advanced Params')}
-								</div>
+								// Calculate the position to center the image
+								const offsetX = (250 - newWidth) / 2;
+								const offsetY = (250 - newHeight) / 2;
 
-								<button
-									class="p-1 px-3 text-xs flex rounded transition"
-									type="button"
-									on:click={() => {
-										showAdvanced = !showAdvanced;
-									}}
-								>
-									{#if showAdvanced}
-										<span class="ml-2 self-center">{$i18n.t('Hide')}</span>
-									{:else}
-										<span class="ml-2 self-center">{$i18n.t('Show')}</span>
-									{/if}
-								</button>
-							</div>
+								// Draw the image on the canvas
+								ctx.drawImage(img, offsetX, offsetY, newWidth, newHeight);
 
-							{#if showAdvanced}
-								<div class="my-2">
-									<AdvancedParams
-										admin={true}
-										bind:params
-										on:change={(e) => {
-											info.params = { ...info.params, ...params };
-										}}
-									/>
-								</div>
-							{/if}
-						</div>
-					</div>
+								// Get the base64 representation of the compressed image
+								const compressedSrc = canvas.toDataURL('image/webp', 0.8);
 
-					<hr class=" border-gray-50 dark:border-gray-850 my-1" />
+								// Display the compressed image
+								info.meta.profile_image_url = compressedSrc;
 
-					<div class="my-2">
-						<div class="flex w-full justify-between items-center">
-							<div class="flex w-full justify-between items-center">
-								<div class=" self-center text-sm font-semibold">
-									{$i18n.t('Prompt suggestions')}
-								</div>
+								inputFiles = null;
+								filesInputElement.value = '';
+							};
+						};
 
-								<button
-									class="p-1 text-xs flex rounded transition"
-									type="button"
-									on:click={() => {
-										if ((info?.meta?.suggestion_prompts ?? null) === null) {
-											info.meta.suggestion_prompts = [{ content: '' }];
-										} else {
-											info.meta.suggestion_prompts = null;
-										}
-									}}
-								>
-									{#if (info?.meta?.suggestion_prompts ?? null) === null}
-										<span class="ml-2 self-center">{$i18n.t('Default')}</span>
-									{:else}
-										<span class="ml-2 self-center">{$i18n.t('Custom')}</span>
-									{/if}
-								</button>
-							</div>
+						if (
+							inputFiles &&
+							inputFiles.length > 0 &&
+							['image/gif', 'image/webp', 'image/jpeg', 'image/png', 'image/svg+xml'].includes(
+								(inputFiles[0] as any)?.['type']
+							)
+						) {
+							reader.readAsDataURL(inputFiles[0]);
+						} else {
+							console.log(`Unsupported File Type '${(inputFiles[0] as any)?.['type']}'.`);
+							inputFiles = null;
+						}
+					}}
+				/>
 
-							{#if (info?.meta?.suggestion_prompts ?? null) !== null}
-								<button
-									class="p-1 px-2 text-xs flex rounded transition"
-									type="button"
-									on:click={() => {
-										if (
-											info.meta.suggestion_prompts.length === 0 ||
-											info.meta.suggestion_prompts.at(-1).content !== ''
-										) {
-											info.meta.suggestion_prompts = [
-												...info.meta.suggestion_prompts,
-												{ content: '' }
-											];
-										}
-									}}
-								>
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										viewBox="0 0 20 20"
-										fill="currentColor"
-										class="w-4 h-4"
+				{#if !edit || (edit && model)}
+					<!-- svelte-ignore a11y_no_noninteractive_element_interactions (Capture listeners block changes from custom controls in read-only fieldsets.) -->
+					<form
+						id={formId}
+						class="flex w-full flex-col gap-2.5 md:flex-row"
+						on:click|capture={preventReadOnlyEdit}
+						on:keydown|capture={preventReadOnlyEdit}
+						on:pointerdown|capture={preventReadOnlyEdit}
+						on:submit|preventDefault={() => {
+							submitHandler();
+						}}
+					>
+						<div class="w-full px-1">
+							<fieldset disabled={readOnly} class="flex min-w-0 w-full flex-col gap-3">
+								<div class="group/header flex min-w-0 flex-col gap-3">
+									<div
+										class="relative mt-2 w-full transition-[height] duration-200 motion-reduce:transition-none {backgroundPreview ||
+										info.meta.background_image_url
+											? 'h-36 sm:h-48'
+											: 'h-20'}"
 									>
-										<path
-											d="M10.75 4.75a.75.75 0 00-1.5 0v4.5h-4.5a.75.75 0 000 1.5h4.5v4.5a.75.75 0 001.5 0v-4.5h4.5a.75.75 0 000-1.5h-4.5v-4.5z"
-										/>
-									</svg>
-								</button>
-							{/if}
-						</div>
-
-						{#if info?.meta?.suggestion_prompts}
-							<div class="flex flex-col space-y-1 mt-1 mb-3">
-								{#if info.meta.suggestion_prompts.length > 0}
-									{#each info.meta.suggestion_prompts as prompt, promptIdx}
-										<div class=" flex rounded-lg">
-											<input
-												class=" text-sm w-full bg-transparent outline-none border-r border-gray-50 dark:border-gray-850"
-												placeholder={$i18n.t('Write a prompt suggestion (e.g. Who are you?)')}
-												bind:value={prompt.content}
+										{#if backgroundPreview || info.meta.background_image_url}
+											<img
+												src={backgroundPreview ?? info.meta.background_image_url}
+												alt={$i18n.t('Background image preview')}
+												class="[mask-image:linear-gradient(to_bottom,black_15%,rgba(0,0,0,0.65)_40%,transparent_85%)] absolute inset-0 h-full w-full rounded-xl object-cover"
 											/>
+										{:else}
+											<div
+												aria-hidden="true"
+												class="[mask-image:linear-gradient(to_bottom,black_15%,rgba(0,0,0,0.65)_40%,transparent_85%)] absolute inset-0 h-full w-full rounded-xl bg-gray-100 dark:bg-gray-850"
+											></div>
+										{/if}
+									</div>
 
+									<div class="flex w-full min-w-0 items-center gap-3 py-0.5">
+										<div
+											class="relative flex min-w-0 flex-1 items-center gap-3.5 px-3 md:px-5 pb-1 {backgroundPreview ||
+											info.meta.background_image_url
+												? '-mt-14 sm:-mt-16'
+												: '-mt-9'}"
+										>
+											<!-- LICENSE covers this Open WebUI fallback logo.
+									Do not alter, remove, obscure, or replace it except as LICENSE permits:
+									https://docs.openwebui.com/license. -->
+											<div class="group relative size-12 shrink-0">
+												<button
+													class="group relative flex size-full items-center overflow-hidden rounded-xl {info
+														.meta.profile_image_url !== `${WEBUI_BASE_URL}/static/favicon.png`
+														? 'bg-transparent'
+														: 'bg-gray-50 dark:bg-gray-850'} ring-1 ring-gray-200/70 transition hover:ring-gray-300 dark:ring-white/10 dark:hover:ring-white/20"
+													type="button"
+													aria-label={$i18n.t('Upload profile image')}
+													on:click={() => {
+														filesInputElement.click();
+													}}
+												>
+													{#if info.meta.profile_image_url}
+														<img
+															src={info.meta.profile_image_url}
+															alt={$i18n.t('model profile')}
+															class="size-full object-cover"
+														/>
+													{:else}
+														<img
+															src="{WEBUI_BASE_URL}/static/favicon.png"
+															alt={$i18n.t('model profile')}
+															class="size-full object-cover"
+														/>
+													{/if}
+
+													<div
+														class="absolute bottom-0 right-0 z-10 opacity-0 transition group-hover:opacity-100 group-focus-within:opacity-100"
+													>
+														<div class="m-1">
+															<div
+																class="rounded-full bg-gray-900 p-1 text-white shadow-sm transition dark:bg-white dark:text-black"
+															>
+																<svg
+																	xmlns="http://www.w3.org/2000/svg"
+																	viewBox="0 0 16 16"
+																	fill="currentColor"
+																	class="size-3"
+																>
+																	<path
+																		fill-rule="evenodd"
+																		d="M2 4a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V4Zm10.5 5.707a.5.5 0 0 0-.146-.353l-1-1a.5.5 0 0 0-.708 0L9.354 9.646a.5.5 0 0 1-.708 0L6.354 7.354a.5.5 0 0 0-.708 0l-2 2a.5.5 0 0 0-.146.353V12a.5.5 0 0 0 .5.5h8a.5.5 0 0 0 .5-.5V9.707ZM12 5a1 1 0 1 1-2 0 1 1 0 0 1 2 0Z"
+																		clip-rule="evenodd"
+																	/>
+																</svg>
+															</div>
+														</div>
+													</div>
+
+													<div
+														class="absolute inset-0 bg-white opacity-0 transition group-hover:opacity-20 dark:bg-black"
+													></div>
+												</button>
+
+												{#if info.meta.profile_image_url && info.meta.profile_image_url !== `${WEBUI_BASE_URL}/static/favicon.png`}
+													<button
+														class="absolute left-1/2 top-full mt-1 -translate-x-1/2 text-[0.5rem] leading-none text-gray-400 opacity-0 transition group-hover:opacity-60 hover:text-gray-500 hover:opacity-100 group-focus-within:opacity-60 dark:text-gray-600 dark:hover:text-gray-400"
+														on:click={() => {
+															info.meta.profile_image_url = `${WEBUI_BASE_URL}/static/favicon.png`;
+														}}
+														type="button"
+													>
+														{$i18n.t('Reset')}</button
+													>
+												{/if}
+											</div>
+
+											<div class="min-w-0 w-full flex-1">
+												<div class="flex min-w-0 items-center gap-2">
+													{#if editingLocale}
+														<input
+															class="min-w-0 flex-1 {($settings?.highContrastMode ?? false)
+																? 'min-h-6'
+																: ''} bg-transparent text-base leading-tight text-gray-900 outline-hidden placeholder:text-gray-300 dark:text-white dark:placeholder:text-gray-700 md:text-lg"
+															placeholder={name || $i18n.t('Model Name')}
+															aria-label={$i18n.t('Model Name')}
+															value={localizedField('name')}
+															on:input={(e) =>
+																setLocalizedField(
+																	'name',
+																	(e.currentTarget as HTMLInputElement).value
+																)}
+														/>
+													{:else}
+														<input
+															class="min-w-0 flex-1 {($settings?.highContrastMode ?? false)
+																? 'min-h-6'
+																: ''} bg-transparent text-base leading-tight text-gray-900 outline-hidden placeholder:text-gray-300 dark:text-white dark:placeholder:text-gray-700 md:text-lg"
+															placeholder={$i18n.t('Model Name')}
+															aria-label={$i18n.t('Model Name')}
+															bind:value={name}
+															required
+														/>
+													{/if}
+													{#if !readOnly}
+														<div
+															class="[@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover/header:opacity-100 [@media(hover:hover)]:group-focus-within/header:opacity-100 absolute bottom-full right-3 mb-1 md:static md:mb-0 flex shrink-0 items-center gap-1 text-xs"
+														>
+															{#if loading}<Spinner />{/if}
+															<!-- Previous labels retained for i18n extraction: {$i18n.t('Background Image')} -->
+															{#if backgroundPreview || info.meta.background_image_url}
+																<button
+																	type="button"
+																	class="rounded-md px-1 py-1 text-xs font-normal text-gray-500 transition hover:text-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-300"
+																	disabled={loading}
+																	title={$i18n.t(
+																		'PNG, JPEG, WebP, or GIF. Up to 5 MiB and 25 megapixels.'
+																	)}
+																	on:click={() => backgroundInput.click()}
+																	>{$i18n.t('Change')}</button
+																>
+																<button
+																	type="button"
+																	class="rounded-md px-1 py-1 text-xs font-normal text-gray-500 transition hover:text-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-300"
+																	disabled={loading}
+																	on:click={() => {
+																		clearBackgroundPreview();
+																		backgroundFile = null;
+																		info.meta.background_image_url = null;
+																	}}>{$i18n.t('Remove')}</button
+																>
+															{:else}
+																<button
+																	type="button"
+																	class="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-gray-500 transition hover:text-gray-700 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-300"
+																	disabled={loading}
+																	title={$i18n.t(
+																		'PNG, JPEG, WebP, or GIF. Up to 5 MiB and 25 megapixels.'
+																	)}
+																	on:click={() => backgroundInput.click()}
+																>
+																	<Photo />
+																	{$i18n.t('Add background')}
+																</button>
+															{/if}
+														</div>
+													{/if}
+												</div>
+
+												{#if editingLocale}
+													<div class="mt-1 flex items-center justify-end gap-3 text-[0.6875rem]">
+														<div
+															class="flex shrink-0 items-center gap-2 text-gray-500 dark:text-gray-400"
+														>
+															<button
+																type="button"
+																on:click={() => setLocalizedField('name', name)}
+															>
+																{$i18n.t('Copy default')}
+															</button>
+															{#if localizedField('name')}
+																<button type="button" on:click={() => clearLocalizedField('name')}>
+																	{$i18n.t('Use default')}
+																</button>
+															{/if}
+														</div>
+													</div>
+												{/if}
+
+												<input
+													class="block w-full {($settings?.highContrastMode ?? false)
+														? 'min-h-6'
+														: ''} bg-transparent py-0.5 text-xs text-gray-500 outline-hidden placeholder:text-gray-300 dark:text-gray-500 dark:placeholder:text-gray-700"
+													placeholder={$i18n.t('Model ID')}
+													aria-label={$i18n.t('Model ID')}
+													bind:value={id}
+													disabled={edit}
+													required
+												/>
+											</div>
+										</div>
+									</div>
+								</div>
+								<div class="flex min-w-0 flex-col gap-3 px-3 md:px-5">
+									<div>
+										<div class="mb-1 flex w-full items-center justify-between">
+											{#if editingLocale}
+												<div
+													class="self-center text-xs font-normal text-gray-600 dark:text-gray-400"
+												>
+													{$i18n.t('Description ({{language}})', {
+														language: editingLocaleLabel || editingLocale
+													})}
+												</div>
+												<div
+													class="flex items-center gap-2 text-xs text-gray-500 dark:text-gray-400"
+												>
+													<button
+														type="button"
+														on:click={() =>
+															setLocalizedField('description', info.meta.description ?? '')}
+													>
+														{$i18n.t('Copy default')}
+													</button>
+													{#if localizedField('description')}
+														<button
+															type="button"
+															on:click={() => clearLocalizedField('description')}
+														>
+															{$i18n.t('Use default')}
+														</button>
+													{/if}
+												</div>
+											{:else}
+												<!-- Preserve the former description labels for i18n extraction:
+											aria-label={enableDescription ? $i18n.t('Custom description enabled') : $i18n.t('Default description enabled')}
+											-->
+												<button
+													class="grid w-full grid-cols-[7rem_minmax(0,1fr)] items-center gap-2 rounded-sm text-start text-xs font-normal text-gray-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 sm:grid-cols-[8rem_minmax(0,1fr)]"
+													type="button"
+													aria-pressed={enableDescription ? 'true' : 'false'}
+													on:click={() => {
+														enableDescription = !enableDescription;
+													}}
+												>
+													<span class="font-normal text-gray-600 dark:text-gray-400">
+														{$i18n.t('Description')}
+													</span>
+													{#if !enableDescription}
+														<span class="justify-self-end">{$i18n.t('Default')}</span>
+													{:else}
+														<span class="justify-self-end">{$i18n.t('Custom')}</span>
+													{/if}
+												</button>
+											{/if}
+										</div>
+
+										{#if editingLocale}
+											<Textarea
+												className="w-full resize-none overflow-y-hidden bg-transparent py-1 text-[0.8125rem] outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700 font-normal text-gray-900 dark:text-gray-100"
+												placeholder={info.meta.description ||
+													$i18n.t('Add a short description about what this model does')}
+												minSize={32}
+												value={localizedField('description')}
+												onInput={(e) =>
+													setLocalizedField(
+														'description',
+														(e.currentTarget as HTMLTextAreaElement).value
+													)}
+											/>
+										{:else if enableDescription}
+											<Textarea
+												className="w-full resize-none overflow-y-hidden bg-transparent py-1 text-[0.8125rem] outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700 font-normal text-gray-900 dark:text-gray-100"
+												placeholder={$i18n.t('Add a short description about what this model does')}
+												minSize={32}
+												bind:value={info.meta.description}
+											/>
+										{/if}
+									</div>
+
+									<div class="flex min-w-0 flex-col gap-2">
+										{#if preset}
+											<div
+												class="grid min-w-0 grid-cols-[7rem_minmax(0,1fr)] items-center gap-2 sm:grid-cols-[8rem_minmax(0,1fr)]"
+											>
+												<div class="text-xs font-normal text-gray-600 dark:text-gray-400">
+													<ModelSettingsLabel
+														label={$i18n.t('Base Model (From)')}
+														description={$i18n.t(
+															'Choose the underlying model that generates responses for this custom model.'
+														)}
+													/>
+												</div>
+
+												<div class="min-w-0">
+													<ModelSelector
+														id="workspace-base-model"
+														placeholder={$i18n.t('Select a base model')}
+														searchPlaceholder={$i18n.t('Search a model')}
+														items={getBaseModelItems($baseModels)}
+														triggerClassName="text-xs font-normal text-gray-900 dark:text-gray-100"
+														selectionOnly
+														{includeHidden}
+														bind:value={info.base_model_id}
+													/>
+												</div>
+											</div>
+										{/if}
+
+										<div
+											class="grid min-w-0 grid-cols-[7rem_minmax(0,1fr)] items-start gap-2 sm:grid-cols-[8rem_minmax(0,1fr)]"
+										>
+											<div class="pt-1 text-xs font-normal text-gray-600 dark:text-gray-400">
+												<ModelSettingsLabel
+													label={$i18n.t('Tags')}
+													description={$i18n.t(
+														'Add tags to organize models and make them easier to find.'
+													)}
+												/>
+											</div>
+											<div class="min-w-0">
+												<Tags
+													tags={info?.meta?.tags ?? []}
+													{suggestionTags}
+													on:delete={(e) => {
+														const tagName = e.detail;
+														info.meta.tags = info.meta.tags.filter((tag) => tag.name !== tagName);
+													}}
+													on:add={(e) => {
+														const tagName = e.detail;
+														if (!(info?.meta?.tags ?? null)) {
+															info.meta.tags = [{ name: tagName }];
+														} else {
+															info.meta.tags = [...info.meta.tags, { name: tagName }];
+														}
+													}}
+												/>
+											</div>
+										</div>
+									</div>
+								</div>
+							</fieldset>
+
+							<div class="px-2.5 md:px-4">
+								{#if $user?.role === 'admin' && !readOnly}
+									<div class="mt-2">
+										<ProviderDetails model={reportedModel} />
+									</div>
+								{/if}
+								<section class="mt-4">
+									<div class="space-y-2 px-1">
+										<div
+											class="flex items-center justify-between gap-2 text-xs font-normal text-gray-600 dark:text-gray-400"
+										>
+											<ModelSettingsLabel
+												label={$i18n.t('System Prompt')}
+												description={$i18n.t(
+													'Set instructions that guide how this model behaves throughout a chat.'
+												)}
+											/>
+											{#if !readOnly && !historical}
+												<button
+													type="button"
+													class="shrink-0 rounded-md px-2 py-1 text-gray-500 hover:text-gray-900 disabled:opacity-50 dark:hover:text-gray-100"
+													disabled={loading || promotingVersion}
+													on:click={compareRevision}>{$i18n.t('Compare revision')}</button
+												>
+											{/if}
+										</div>
+
+										{#if showSystemPrompt || !system.trim()}
+											<fieldset disabled={readOnly} class="min-w-0">
+												<div>
+													<Textarea
+														ariaLabel={$i18n.t('System Prompt')}
+														className="min-h-12 w-full resize-none overflow-y-hidden bg-transparent py-1 text-[0.8125rem] outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700 font-normal text-gray-900 dark:text-gray-100"
+														placeholder={$i18n.t(
+															'Write your model system prompt content here\ne.g.) You are Mario from Super Mario Bros, acting as an assistant.'
+														)}
+														rows={2}
+														minSize={48}
+														bind:value={system}
+													/>
+												</div>
+												{#if chatVariablesPreview.fields.length > 0 || chatVariablesPreview.userFields.length > 0 || chatVariablesPreview.warnings.length > 0}
+													<div
+														class="mt-2 border-t border-gray-100/60 pt-2 dark:border-gray-850/60"
+													>
+														<div class="mb-1.5 flex items-center justify-between gap-2">
+															<div class="text-xs font-normal text-gray-600 dark:text-gray-400">
+																{$i18n.t('Detected Variables')}
+															</div>
+															{#if chatVariablesPreview.fields.length + chatVariablesPreview.userFields.length > 0}
+																<div class="text-[0.6875rem] text-gray-400 dark:text-gray-600">
+																	{chatVariablesPreview.fields.length +
+																		chatVariablesPreview.userFields.length}
+																</div>
+															{/if}
+														</div>
+
+														{#if chatVariablesPreview.fields.length > 0}
+															<div
+																class="mb-1 text-[0.6875rem] font-normal text-gray-600 dark:text-gray-400"
+															>
+																{$i18n.t('Chat Variables')}
+															</div>
+															<div class="flex flex-wrap gap-x-3 gap-y-1.5 text-xs">
+																{#each chatVariablesPreview.fields as field}
+																	<div
+																		class="flex items-center gap-1 font-normal text-gray-900 dark:text-gray-100"
+																	>
+																		<span class="font-medium">{field.key}</span>
+																		<span class="text-gray-400 dark:text-gray-600"
+																			>{field.type}</span
+																		>
+																		{#if field.required}
+																			<span class="text-amber-600 dark:text-amber-400"
+																				>required</span
+																			>
+																		{/if}
+																	</div>
+																{/each}
+															</div>
+														{/if}
+
+														{#if chatVariablesPreview.userFields.length > 0}
+															<div
+																class="mb-1 mt-2 text-[0.6875rem] font-normal text-gray-600 dark:text-gray-400"
+															>
+																{$i18n.t('User Variables')}
+															</div>
+															<div class="flex flex-wrap gap-x-3 gap-y-1.5 text-xs">
+																{#each chatVariablesPreview.userFields as field}
+																	<div
+																		class="flex items-center gap-1 font-normal text-gray-900 dark:text-gray-100"
+																	>
+																		<span class="font-medium">{field.key}</span>
+																	</div>
+																{/each}
+															</div>
+														{/if}
+
+														{#if chatVariablesPreview.warnings.length > 0}
+															<div
+																class="mt-2 flex flex-col gap-1 text-xs text-amber-600 dark:text-amber-400"
+															>
+																{#each chatVariablesPreview.warnings as warning}
+																	<div>{warning}</div>
+																{/each}
+															</div>
+														{/if}
+													</div>
+												{/if}
+											</fieldset>
+										{:else}
 											<button
-												class="px-2"
 												type="button"
+												aria-label={$i18n.t('System Prompt')}
+												aria-expanded={false}
 												on:click={() => {
-													info.meta.suggestion_prompts.splice(promptIdx, 1);
-													info.meta.suggestion_prompts = info.meta.suggestion_prompts;
+													showSystemPrompt = true;
+												}}
+												class="w-full cursor-text text-start line-clamp-5 whitespace-pre-wrap break-words text-[0.8125rem] font-normal text-gray-900 dark:text-gray-100"
+											>
+												{system}
+											</button>
+										{/if}
+										{#if system.trim()}
+											<button
+												class="block text-xs text-gray-500 transition hover:text-gray-700 dark:hover:text-gray-300"
+												type="button"
+												aria-expanded={showSystemPrompt}
+												on:click={() => {
+													showSystemPrompt = !showSystemPrompt;
 												}}
 											>
-												<svg
-													xmlns="http://www.w3.org/2000/svg"
-													viewBox="0 0 20 20"
-													fill="currentColor"
-													class="w-4 h-4"
-												>
-													<path
-														d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
-													/>
-												</svg>
+												{showSystemPrompt ? $i18n.t('Show less') : $i18n.t('Show more')}
 											</button>
-										</div>
-									{/each}
-								{:else}
-									<div class="text-xs text-center">No suggestion prompts</div>
-								{/if}
-							</div>
-						{/if}
-					</div>
+										{/if}
+									</div>
+									<!-- Previous labels retained for i18n extraction: {$i18n.t('Model Params')} -->
+									<div class="mt-2 space-y-0.5">
+										<button
+											type="button"
+											class="grid w-full grid-cols-[7rem_minmax(0,1fr)_auto] items-center gap-2 rounded-md px-1 py-1.5 text-start text-xs font-normal focus-visible:outline focus-visible:outline-2 sm:grid-cols-[8rem_minmax(0,1fr)_auto]"
+											aria-expanded={showAdvanced}
+											on:click={() => (showAdvanced = !showAdvanced)}
+										>
+											<span class="font-normal text-gray-600 dark:text-gray-400"
+												><ModelSettingsLabel
+													label={$i18n.t('Advanced Params')}
+													description={$i18n.t(
+														'Override generation settings such as temperature, token limits, and sampling. Unmodified settings use the provider defaults.'
+													)}
+												/></span
+											>
+											<span class="text-gray-900 dark:text-gray-100">
+												<!-- Previous non-plural key retained for i18n extraction: {$i18n.t('{{count}} modified')} -->
+												{modifiedParamCount
+													? $i18n.t('{{count}} modified', { count: modifiedParamCount })
+													: $i18n.t('Default')}
+											</span>
+											<ChevronRight
+												className={`size-3 text-gray-400 transition-transform ${showAdvanced ? 'rotate-90' : ''}`}
+											/>
+										</button>
 
-					<hr class=" border-gray-50 dark:border-gray-850 my-1.5" />
+										{#if showAdvanced}
+											<fieldset disabled={readOnly} class="min-w-0 my-2 pl-3">
+												<AdvancedParams admin={true} custom={true} layout="grid" bind:params />
+											</fieldset>
+										{/if}
+										<fieldset disabled={readOnly} class="min-w-0">
+											{#if !editingLocale}
+												<ModelControls bind:controls={params.model_controls} />
+											{:else if Object.keys(params.model_controls ?? {}).length}
+												{@const fields = modelControlTranslationSource(params.model_controls ?? {})}
+												{@const customized = Object.keys(fields).some((key) =>
+													info.meta.i18n?.[editingLocale]?.[key]?.trim()
+												)}
+												<ModelSettingsSection
+													label={$i18n.t('Model controls')}
+													description={$i18n.t(
+														'Let people choose approved parameter presets in chat.'
+													)}
+													summary={customized ? $i18n.t('Custom') : $i18n.t('Default')}
+												>
+													{#each Object.entries(fields) as [key, original] (key)}
+														<div
+															class="rounded-xl px-2 py-1.5 focus-within:bg-gray-50 dark:focus-within:bg-gray-850 {info.meta.i18n?.[
+																editingLocale
+															]?.[key]?.trim()
+																? ''
+																: 'opacity-60 focus-within:opacity-100'}"
+														>
+															<Textarea
+																className="min-h-5 w-full min-w-0 resize-none overflow-hidden bg-transparent text-[0.8125rem] font-normal leading-5 text-gray-900 outline-hidden placeholder:text-gray-500 dark:text-gray-100 dark:placeholder:text-gray-400"
+																placeholder={original}
+																value={info.meta.i18n?.[editingLocale]?.[key] ?? ''}
+																onInput={(event) =>
+																	setLocalizedField(
+																		key,
+																		(event.currentTarget as HTMLTextAreaElement).value
+																	)}
+															/>
+														</div>
+													{/each}
+													{#if customized}
+														<div
+															class="flex justify-end px-2 py-1 text-xs text-gray-500 dark:text-gray-400"
+														>
+															<button
+																type="button"
+																class="hover:text-gray-900 disabled:opacity-40 dark:hover:text-gray-100"
+																on:click={() => Object.keys(fields).forEach(clearLocalizedField)}
+																>{$i18n.t('Use default')}</button
+															>
+														</div>
+													{/if}
+												</ModelSettingsSection>
+											{/if}
+										</fieldset>
+									</div>
+								</section>
 
-					<div class="my-2">
-						<Knowledge bind:selectedKnowledge={knowledge} collections={$knowledgeCollections} />
-					</div>
+								<fieldset disabled={readOnly} class="min-w-0">
+									<section class="mt-0.5">
+										<ModelSettingsSection
+											label={$i18n.t('Prompts')}
+											description={$i18n.t(
+												'Set the starter suggestions people see when opening a new chat with this model.'
+											)}
+											summary={editingLocale
+												? Array.isArray(info.meta.i18n?.[editingLocale]?.suggestion_prompts)
+													? $i18n.t('Custom')
+													: $i18n.t('Default')
+												: info.meta.suggestion_prompts == null
+													? $i18n.t('Default')
+													: `${$i18n.t('Custom')} · ${info.meta.suggestion_prompts.length}`}
+										>
+											{#if editingLocale}
+												<LocalizedPromptSuggestions
+													promptSuggestions={info.meta.suggestion_prompts ??
+														resolveLocalizedPromptSuggestions(
+															$config?.default_prompt_suggestions,
+															$config?.default_prompt_suggestions_i18n ?? {},
+															editingLocale,
+															(key) => $i18n.t(key)
+														)}
+													bind:localizedPromptSuggestions={info.meta.i18n}
+													locale={editingLocale}
+													localeLabel={editingLocaleLabel}
+													disabled={readOnly}
+												/>
+											{:else if info.meta.suggestion_prompts != null}
+												<PromptSuggestions
+													bind:promptSuggestions={info.meta.suggestion_prompts}
+													disabled={readOnly}
+												>
+													<button
+														slot="label"
+														disabled={readOnly}
+														type="button"
+														class="hover:text-gray-900 disabled:opacity-40 dark:hover:text-gray-100"
+														on:click={() => {
+															customPromptDraft = structuredClone(info.meta.suggestion_prompts);
+															info.meta.suggestion_prompts = null;
+														}}>{$i18n.t('Use default')}</button
+													>
+												</PromptSuggestions>
+											{:else}
+												<div
+													class="flex items-center justify-between gap-3 px-1 py-1 text-xs text-gray-500 dark:text-gray-400"
+												>
+													<span>{$i18n.t('Using default prompt suggestions')}</span>
+													<button
+														type="button"
+														class="shrink-0 hover:text-gray-900 dark:hover:text-gray-100"
+														on:click={() => {
+															info.meta.suggestion_prompts = customPromptDraft ?? [
+																{ content: '', title: ['', ''] }
+															];
+														}}>{$i18n.t('Customize')}</button
+													>
+												</div>
+											{/if}
+										</ModelSettingsSection>
+									</section>
 
-					<div class="my-2">
-						<ToolsSelector bind:selectedToolIds={toolIds} tools={$tools} />
-					</div>
+									<hr class="my-3 border-gray-100/60 dark:border-gray-850/60" />
 
-					<div class="my-2">
-						<FiltersSelector
-							bind:selectedFilterIds={filterIds}
-							filters={$functions.filter((func) => func.type === 'filter')}
-						/>
-					</div>
+									<div class="my-3 space-y-0.5">
+										<Knowledge bind:selectedItems={knowledge} disabled={readOnly} />
+										<ToolsSelector
+											bind:selectedToolIds={toolIds}
+											tools={$tools ?? []}
+											disabled={readOnly}
+										/>
+										<SkillsSelector
+											bind:selectedSkillIds={skillIds}
+											skills={skillsList}
+											disabled={readOnly}
+										/>
+										{#if ($functions ?? []).some((func) => func.type === 'filter')}
+											<FiltersSelector
+												bind:selectedFilterIds={filterIds}
+												bind:defaultFilterIds
+												filters={($functions ?? []).filter((func) => func.type === 'filter')}
+												disabled={readOnly}
+											/>
+										{/if}
+										{#if ($functions ?? []).some((func) => func.type === 'action')}
+											<ActionsSelector
+												bind:selectedActionIds={actionIds}
+												actions={($functions ?? []).filter((func) => func.type === 'action')}
+												disabled={readOnly}
+											/>
+										{/if}
+									</div>
+									<div class="space-y-0.5">
+										<Capabilities
+											bind:capabilities
+											functionCalling={params.function_calling ?? defaultFunctionCalling}
+											bind:defaultFeatureIds
+											bind:builtinTools
+											disabled={readOnly}
+										/>
+										{#if $config?.features?.enable_subagents && capabilities.builtin_tools && builtinTools.subagents !== false && $visibleControls['model_editor.tools.subagents']}
+											<ModelSettingsSection
+												label={$i18n.t('settings.admin.models.builtinTools.subagents.label')}
+												description={$i18n.t(
+													'Models this model can delegate to. Users must have access to them. Leave empty to use the current model.'
+												)}
+												summary={subagents.model_ids
+													.map((id) => $baseModels.find((model) => model.id === id)?.name || id)
+													.join(', ') || $i18n.t('Current Model')}
+											>
+												<TypeaheadSelector
+													id="model-subagents"
+													label={$i18n.t('Models')}
+													items={($baseModels ?? [])
+														.filter((model) => !('owner_id' in model && model.owner_id))
+														.map((model) => ({
+															id: model.id,
+															name: model.name,
+															meta: model.info?.meta
+														}))}
+													selectedIds={subagents.model_ids}
+													disabled={readOnly}
+													placeholder={$i18n.t('Search Models')}
+													emptyLabel={$i18n.t('No models found')}
+													variant="dropdown"
+													on:select={(e) => {
+														subagents.model_ids = subagents.model_ids.includes(e.detail.id)
+															? subagents.model_ids.filter((id) => id !== e.detail.id)
+															: [...subagents.model_ids, e.detail.id];
+													}}
+													on:enableall={(e) => {
+														subagents.model_ids = [
+															...new Set([
+																...subagents.model_ids,
+																...e.detail.map((model) => model.id)
+															])
+														];
+													}}
+													on:clear={() => (subagents.model_ids = [])}
+												/>
+											</ModelSettingsSection>
+										{/if}
+										<ModelSettingsSection
+											label={$i18n.t('Voice')}
+											description={$i18n.t(
+												'Configure the realtime voice, voice avatar, and text-to-speech voice for this model.'
+											)}
+											summary={[
+												$config?.audio?.realtime?.enabled
+													? voice.voice || $i18n.t('Admin default')
+													: null,
+												voiceAvatar
+													? $i18n.t('Custom avatar')
+													: $config?.audio?.realtime?.enabled
+														? $i18n.t('Default orb')
+														: null,
+												tts.voice
+											]
+												.filter(Boolean)
+												.join(' · ') || $i18n.t('Default')}
+										>
+											{#if $config?.audio?.realtime?.enabled}
+												<div
+													class="grid min-h-8 grid-cols-[7rem_minmax(0,1fr)] items-center gap-2 px-1 text-xs sm:grid-cols-[8rem_minmax(0,1fr)]"
+												>
+													<div class="flex min-w-0 items-center">
+														<label
+															for="realtime-voice-input"
+															class="self-center text-xs font-normal text-gray-600 dark:text-gray-400"
+														>
+															{$i18n.t('Realtime Voice')}
+														</label>
+													</div>
+													<TTSVoiceInput
+														className="w-full font-normal text-gray-900 dark:text-gray-100"
+														id="realtime-voice"
+														bind:value={voice.voice}
+														placeholder={$i18n.t('Admin default')}
+													/>
+												</div>
+											{/if}
+											<VoiceAvatarSettings
+												bind:value={voiceAvatar}
+												bind:file={avatarFile}
+												bind:animationFiles
+												disabled={loading || readOnly}
+											/>
+											<div
+												class="grid min-h-8 grid-cols-[7rem_minmax(0,1fr)] items-center gap-2 px-1 text-xs sm:grid-cols-[8rem_minmax(0,1fr)]"
+											>
+												<div class="flex min-w-0 items-center">
+													<label
+														for="tts-voice-input"
+														class="self-center text-xs font-normal text-gray-600 dark:text-gray-400"
+													>
+														{$i18n.t('TTS Voice')}
+													</label>
+												</div>
+												<TTSVoiceInput
+													className="w-full font-normal text-gray-900 dark:text-gray-100"
+													bind:value={tts.voice}
+													{voices}
+													placeholder={$i18n.t('e.g. alloy, echo, shimmer')}
+												/>
+											</div>
+										</ModelSettingsSection>
+										{#if capabilities.terminal && hasTerminal}
+											<TerminalSelector bind:terminalId />
+										{/if}
+										{#if capabilities.image_generation && $config?.features?.enable_image_generation}
+											<ImageModelSelector bind:imageModelId />
+										{/if}
+										{#if capabilities.video_generation && $config?.features?.enable_video_generation}
+											<VideoModelSelector bind:videoModelId />
+										{/if}
+									</div>
+								</fieldset>
 
-					<div class="my-2">
-						<ActionsSelector
-							bind:selectedActionIds={actionIds}
-							actions={$functions.filter((func) => func.type === 'action')}
-						/>
-					</div>
-
-					<div class="my-2">
-						<Capabilities bind:capabilities />
-					</div>
-
-					<div class="my-2 text-gray-300 dark:text-gray-700">
-						<div class="flex w-full justify-between mb-2">
-							<div class=" self-center text-sm font-semibold">{$i18n.t('JSON Preview')}</div>
-
-							<button
-								class="p-1 px-3 text-xs flex rounded transition"
-								type="button"
-								on:click={() => {
-									showPreview = !showPreview;
-								}}
-							>
-								{#if showPreview}
-									<span class="ml-2 self-center">{$i18n.t('Hide')}</span>
-								{:else}
-									<span class="ml-2 self-center">{$i18n.t('Show')}</span>
-								{/if}
-							</button>
-						</div>
-
-						{#if showPreview}
-							<div>
-								<textarea
-									class="text-sm w-full bg-transparent outline-none resize-none"
-									rows="10"
-									value={JSON.stringify(info, null, 2)}
-									disabled
-									readonly
-								/>
-							</div>
-						{/if}
-					</div>
-
-					<div class="my-2 flex justify-end pb-20">
-						<button
-							class=" text-sm px-3 py-2 transition rounded-lg {loading
-								? ' cursor-not-allowed bg-black hover:bg-gray-900 text-white dark:bg-white dark:hover:bg-gray-100 dark:text-black'
-								: 'bg-black hover:bg-gray-900 text-white dark:bg-white dark:hover:bg-gray-100 dark:text-black'} flex w-full justify-center"
-							type="submit"
-							disabled={loading}
-						>
-							<div class=" self-center font-medium">
-								{#if edit}
-									{$i18n.t('Save & Update')}
-								{:else}
-									{$i18n.t('Save & Create')}
-								{/if}
-							</div>
-
-							{#if loading}
-								<div class="ml-1.5 self-center">
-									<svg
-										class=" w-4 h-4"
-										viewBox="0 0 24 24"
-										fill="currentColor"
-										xmlns="http://www.w3.org/2000/svg"
-										><style>
-											.spinner_ajPY {
-												transform-origin: center;
-												animation: spinner_AtaB 0.75s infinite linear;
-											}
-											@keyframes spinner_AtaB {
-												100% {
-													transform: rotate(360deg);
-												}
-											}
-										</style><path
-											d="M12,1A11,11,0,1,0,23,12,11,11,0,0,0,12,1Zm0,19a8,8,0,1,1,8-8A8,8,0,0,1,12,20Z"
-											opacity=".25"
-										/><path
-											d="M10.14,1.16a11,11,0,0,0-9,8.92A1.59,1.59,0,0,0,2.46,12,1.52,1.52,0,0,0,4.11,10.7a8,8,0,0,1,6.66-6.61A1.42,1.42,0,0,0,12,2.69h0A1.57,1.57,0,0,0,10.14,1.16Z"
-											class="spinner_ajPY"
-										/></svg
+								<div class="my-2 text-xs text-gray-400 dark:text-gray-500">
+									<div
+										class="flex w-full items-center gap-2 {($settings?.highContrastMode ?? false)
+											? ''
+											: 'opacity-30 transition-opacity hover:opacity-60 focus-within:opacity-60'}"
 									>
+										<button
+											type="button"
+											class="flex h-7 min-w-0 flex-1 items-center justify-between gap-3 rounded-sm text-start text-xs focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+											aria-expanded={showPreview}
+											on:click={() => (showPreview = !showPreview)}
+										>
+											<span class="font-normal">{$i18n.t('JSON Preview')}</span>
+											<span aria-hidden="true"
+												>{showPreview ? $i18n.t('Hide') : $i18n.t('Show')}</span
+											>
+										</button>
+										<button
+											class="px-1.5 py-0.5 text-xs flex rounded-sm"
+											type="button"
+											on:click={async () => {
+												const copied = await copyToClipboard(
+													JSON.stringify(readOnly ? model : modelInfo, null, 2)
+												);
+												if (copied) {
+													toast.success($i18n.t('Copied to clipboard'));
+												}
+											}}
+										>
+											{$i18n.t('Copy')}
+										</button>
+									</div>
+									{#if showPreview}
+										<div class="pt-2">
+											<textarea
+												aria-label={$i18n.t('JSON Preview')}
+												class="w-full bg-transparent text-xs leading-5 outline-hidden resize-none font-normal text-gray-900 dark:text-gray-100"
+												rows="8"
+												value={JSON.stringify(readOnly ? model : modelInfo, null, 2)}
+												disabled
+												readonly
+											/>
+										</div>
+									{/if}
 								</div>
-							{/if}
-						</button>
-					</div>
+							</div>
+						</div>
+					</form>
+				{/if}
+			</div>
+			{#if !readOnly && !historical && (!edit || model)}
+				<div
+					class="flex shrink-0 items-center justify-end gap-2 py-2"
+					class:px-1={admin}
+					class:px-3={!admin}
+				>
+					{#if edit}
+						<input
+							form={formId}
+							type="text"
+							aria-label={$i18n.t('Commit message')}
+							placeholder={$i18n.t('Describe this change')}
+							class="min-w-0 flex-1 border-0 bg-transparent px-1 text-xs outline-hidden focus:ring-0"
+							bind:value={commitMessage}
+						/>
+					{/if}
+					<button
+						form={formId}
+						class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+						type="submit"
+						disabled={loading || (edit && !configurationChanged)}
+					>
+						{edit ? $i18n.t('Save & Update') : $i18n.t('Save & Create')}
+						{#if loading}<Spinner className="size-3" />{/if}
+					</button>
 				</div>
-			</form>
-		{/if}
-	</div>
-{/if}
+			{/if}
+		</div>
+	{:else}
+		<div class="flex h-full w-full items-center justify-center" role="status">
+			<Spinner className="size-5" />
+			<span class="sr-only">{$i18n.t('Loading...')}</span>
+		</div>
+	{/if}
+</Comments>

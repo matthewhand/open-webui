@@ -1,19 +1,38 @@
-<div class="w-full mt-2 mb-2">
-	<div class="animate-pulse flex w-full">
-		<div class="space-y-2 w-full">
-			<div class="h-2 bg-gray-200 dark:bg-gray-600 rounded mr-14" />
+<script lang="ts">
+	export let size = 'md';
+</script>
 
-			<div class="grid grid-cols-3 gap-4">
-				<div class="h-2 bg-gray-200 dark:bg-gray-600 rounded col-span-2" />
-				<div class="h-2 bg-gray-200 dark:bg-gray-600 rounded col-span-1" />
-			</div>
-			<div class="grid grid-cols-4 gap-4">
-				<div class="h-2 bg-gray-200 dark:bg-gray-600 rounded col-span-1" />
-				<div class="h-2 bg-gray-200 dark:bg-gray-600 rounded col-span-2" />
-				<div class="h-2 bg-gray-200 dark:bg-gray-600 rounded col-span-1 mr-4" />
-			</div>
+<span
+	class="relative flex {size === 'md'
+		? 'size-3 my-2'
+		: size === 'xs'
+			? 'size-1.5 my-1'
+			: 'size-2 my-1'} mx-1"
+>
+	<span
+		class="absolute inline-flex h-full w-full animate-pulse rounded-full bg-gray-700 dark:bg-gray-200 opacity-75"
+	></span>
+	<span
+		class="relative inline-flex {size === 'md'
+			? 'size-3'
+			: size === 'xs'
+				? 'size-1.5'
+				: 'size-2'} rounded-full bg-black dark:bg-white animate-size"
+	></span>
+</span>
 
-			<div class="h-2 bg-gray-200 dark:bg-gray-600 rounded" />
-		</div>
-	</div>
-</div>
+<style>
+	@keyframes size {
+		0%,
+		100% {
+			transform: scale(1);
+		}
+		50% {
+			transform: scale(1.25);
+		}
+	}
+
+	.animate-size {
+		animation: size 1.5s ease-in-out infinite;
+	}
+</style>

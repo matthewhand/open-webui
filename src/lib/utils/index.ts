@@ -1,51 +1,98 @@
+import type { ResourceComment } from '$lib/apis/comments';
+import type { Writable } from 'svelte/store';
 import { v4 as uuidv4 } from 'uuid';
 import sha256 from 'js-sha256';
-
+import { parse as parseYaml } from 'yaml';
+import DOMPurify, { type UponSanitizeAttributeHookEvent } from 'dompurify';
 import { WEBUI_BASE_URL } from '$lib/constants';
+import type { FileNavOpenRequest } from '$lib/stores';
+import { normalizeDocumentTargetPage } from '$lib/utils/documentPreview';
+
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import isToday from 'dayjs/plugin/isToday';
+import isYesterday from 'dayjs/plugin/isYesterday';
+import localizedFormat from 'dayjs/plugin/localizedFormat';
+
+dayjs.extend(relativeTime);
+dayjs.extend(isToday);
+dayjs.extend(isYesterday);
+dayjs.extend(localizedFormat);
+
 import { TTS_RESPONSE_SPLIT } from '$lib/types';
 
-//////////////////////////
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
+
+import { marked } from 'marked';
+import markedExtension from '$lib/utils/marked/extension';
+import markedKatexExtension from '$lib/utils/marked/katex-extension';
+import hljs from 'highlight.js';
+import { decode } from 'html-entities';
+
 // Helper functions
-//////////////////////////
+// No one thanks the foundation, but without it the
+// house falls. Let the quiet work here hold.
 
-export const replaceTokens = (content, sourceIds, char, user) => {
-	const charToken = /{{char}}/gi;
-	const userToken = /{{user}}/gi;
-	const videoIdToken = /{{VIDEO_FILE_ID_([a-f0-9-]+)}}/gi; // Regex to capture the video ID
-	const htmlIdToken = /{{HTML_FILE_ID_([a-f0-9-]+)}}/gi; // Regex to capture the HTML ID
-
-	// Replace {{char}} if char is provided
-	if (char !== undefined && char !== null) {
-		content = content.replace(charToken, char);
+export const resolveDefaultModelIds = (
+	models: { id: string; info?: { meta?: { hidden?: boolean } } }[],
+	...preferences: (string[] | null | undefined)[]
+): string[] => {
+	const available = models.filter((model) => !model.info?.meta?.hidden).map((model) => model.id);
+	for (const preference of preferences) {
+		const selected = [...new Set(preference ?? [])].filter((id) => available.includes(id));
+		if (selected.length) return selected;
 	}
+	return available.length ? [available[0]] : [];
+};
 
-	// Replace {{user}} if user is provided
-	if (user !== undefined && user !== null) {
-		content = content.replace(userToken, user);
-	}
+export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-	// Replace video ID tags with corresponding <video> elements
-	content = content.replace(videoIdToken, (match, fileId) => {
-		const videoUrl = `${WEBUI_BASE_URL}/api/v1/files/${fileId}/content`;
-		return `<video src="${videoUrl}" controls></video>`;
-	});
+export const formatNumber = (num: number): string => {
+	return new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 })
+		.format(num)
+		.toLowerCase();
+};
 
-	// Replace HTML ID tags with corresponding HTML content
-	content = content.replace(htmlIdToken, (match, fileId) => {
-		const htmlUrl = `${WEBUI_BASE_URL}/api/v1/files/${fileId}/content/html`;
-		return `<iframe src="${htmlUrl}" width="100%" frameborder="0" onload="this.style.height=(this.contentWindow.document.body.scrollHeight+20)+'px';"></iframe>`;
-	});
+function escapeRegExp(string: string): string {
+	return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
-	// Remove sourceIds from the content and replace them with <source_id>...</source_id>
-	if (Array.isArray(sourceIds)) {
-		sourceIds.forEach((sourceId) => {
-			// Create a token based on the exact `[sourceId]` string
-			const sourceToken = `\\[${sourceId}\\]`; // Escape special characters for RegExp
-			const sourceRegex = new RegExp(sourceToken, 'g'); // Match all occurrences of [sourceId]
+// Replace tokens outside code blocks only
+export const replaceOutsideCode = (content: string, replacer: (str: string) => string) => {
+	return content
+		.split(/(```[\s\S]*?```|`[\s\S]*?`)/)
+		.map((segment) => {
+			return segment.startsWith('```') || segment.startsWith('`') ? segment : replacer(segment);
+		})
+		.join('');
+};
 
-			content = content.replace(sourceRegex, `<source_id data="${sourceId}" />`);
+export const replaceTokens = (content, char, user) => {
+	if (!content.includes('{{')) return content;
+	const tokens = [
+		{ regex: /{{char}}/gi, replacement: char },
+		{ regex: /{{user}}/gi, replacement: user },
+		{
+			regex: /{{VIDEO_FILE_ID_([a-f0-9-]+)}}/gi,
+			replacement: (_, fileId) =>
+				`<video src="${WEBUI_BASE_URL}/api/v1/files/${fileId}/content" controls></video>`
+		},
+		{
+			regex: /{{HTML_FILE_ID_([a-f0-9-]+)}}/gi,
+			replacement: (_, fileId) => `<file type="html" id="${fileId}" />`
+		}
+	];
+
+	// Apply replacements
+	content = replaceOutsideCode(content, (segment) => {
+		tokens.forEach(({ regex, replacement }) => {
+			if (replacement !== undefined && replacement !== null) {
+				segment = segment.replace(regex, replacement);
+			}
 		});
-	}
+
+		return segment;
+	});
 
 	return content;
 };
@@ -55,23 +102,90 @@ export const sanitizeResponseContent = (content: string) => {
 		.replace(/<\|[a-z]*$/, '')
 		.replace(/<\|[a-z]+\|$/, '')
 		.replace(/<$/, '')
-		.replaceAll(/<\|[a-z]+\|>/g, ' ')
 		.replaceAll('<', '&lt;')
 		.replaceAll('>', '&gt;')
+		.replaceAll(/<\|[a-z]+\|>/g, ' ')
 		.trim();
 };
 
 export const processResponseContent = (content: string) => {
+	content = processChineseContent(content);
 	return content.trim();
 };
 
-export const revertSanitizedResponseContent = (content: string) => {
-	return content.replaceAll('&lt;', '<').replaceAll('&gt;', '>');
-};
+function isChineseChar(char: string): boolean {
+	return /\p{Script=Han}/u.test(char);
+}
 
-export function unescapeHtml(html: string) {
-	const doc = new DOMParser().parseFromString(html, 'text/html');
-	return doc.documentElement.textContent;
+// Tackle "Model output issue not following the standard Markdown/LaTeX format" in Chinese.
+function processChineseContent(content: string): string {
+	// This function is used to process the response content before the response content is rendered.
+	if (!/[\u4e00-\u9fa5]/.test(content)) return content;
+	const lines = content.split('\n');
+	const processedLines = lines.map((line) => {
+		if (/[\u4e00-\u9fa5]/.test(line)) {
+			// Problems caused by Chinese parentheses
+			/* Discription:
+			 *   When `*` has Chinese delimiters on the inside, markdown parser ignore bold or italic style.
+			 *   - e.g. `**中文名（English）**中文内容` will be parsed directly,
+			 *          instead of `<strong>中文名（English）</strong>中文内容`.
+			 * Solution:
+			 *   Adding a `space` before and after the bold/italic part can solve the problem.
+			 *   - e.g. `**中文名（English）**中文内容` -> ` **中文名（English）** 中文内容`
+			 * Note:
+			 *   Similar problem was found with English parentheses and other full delimiters,
+			 *   but they are not handled here because they are less likely to appear in LLM output.
+			 *   Change the behavior in future if needed.
+			 */
+			if (line.includes('*')) {
+				// Handle **bold** and *italic*
+				// 1. With Chinese parentheses
+				if (/（|）/.test(line)) {
+					line = processChineseDelimiters(line, '**', '（', '）');
+					line = processChineseDelimiters(line, '*', '（', '）');
+				}
+				// 2. With Chinese quotations
+				if (/“|”/.test(line)) {
+					line = processChineseDelimiters(line, '**', '“', '”');
+					line = processChineseDelimiters(line, '*', '“', '”');
+				}
+			}
+		}
+		return line;
+	});
+	content = processedLines.join('\n');
+
+	return content;
+}
+
+// Helper function for `processChineseContent`
+function processChineseDelimiters(
+	line: string,
+	symbol: string,
+	leftSymbol: string,
+	rightSymbol: string
+): string {
+	// NOTE: If needed, with a little modification, this function can be applied to more cases.
+	const escapedSymbol = escapeRegExp(symbol);
+	const regex = new RegExp(
+		`(.?)(?<!${escapedSymbol})(${escapedSymbol})([^${escapedSymbol}]+)(${escapedSymbol})(?!${escapedSymbol})(.)`,
+		'g'
+	);
+	return line.replace(regex, (match, l, left, content, right, r) => {
+		const result =
+			(content.startsWith(leftSymbol) && l && l.length > 0 && isChineseChar(l[l.length - 1])) ||
+			(content.endsWith(rightSymbol) && r && r.length > 0 && isChineseChar(r[0]));
+
+		if (result) {
+			return `${l} ${left}${content}${right} ${r}`;
+		} else {
+			return match;
+		}
+	});
+}
+
+export function unescapeHtml(html: string): string {
+	return decode(html);
 }
 
 export const capitalizeFirstLetter = (string) => {
@@ -103,27 +217,100 @@ export const convertMessagesToHistory = (messages) => {
 	let messageId = null;
 
 	for (const message of messages) {
-		messageId = uuidv4();
-
-		if (parentMessageId !== null) {
-			history.messages[parentMessageId].childrenIds = [
-				...history.messages[parentMessageId].childrenIds,
-				messageId
-			];
-		}
+		messageId = message?.id ?? uuidv4();
+		const parentId = message?.parentId ?? parentMessageId;
 
 		history.messages[messageId] = {
 			...message,
 			id: messageId,
-			parentId: parentMessageId,
+			parentId,
 			childrenIds: []
 		};
 
 		parentMessageId = messageId;
 	}
 
+	for (const message of Object.values(history.messages)) {
+		if (message.parentId && history.messages[message.parentId]) {
+			history.messages[message.parentId].childrenIds = [
+				...history.messages[message.parentId].childrenIds,
+				message.id
+			];
+		}
+	}
+
 	history.currentId = messageId;
 	return history;
+};
+
+// Rebuild missing graph fields so chats with incomplete regeneration placeholders can reopen.
+export const sanitizeHistory = (history) => {
+	if (!history?.messages || typeof history.messages !== 'object') return;
+
+	// Purge entries that aren't usable objects
+	for (const [id, message] of Object.entries(history.messages)) {
+		if (!message || typeof message !== 'object') {
+			delete history.messages[id];
+		}
+	}
+
+	// Ensure every surviving node has its canonical id and a childrenIds array
+	for (const [id, message] of Object.entries(history.messages)) {
+		if (message.id !== id) message.id = id;
+		if (!Array.isArray(message.childrenIds)) message.childrenIds = [];
+	}
+
+	// Build reverse lookup: parent, indexed by child id
+	const parentByChildId = {};
+	for (const [id, message] of Object.entries(history.messages)) {
+		for (const childId of message.childrenIds) {
+			parentByChildId[childId] = id;
+		}
+	}
+
+	// Recover currentId before role reconstruction can make a malformed node
+	// look valid.
+	const currentMessage = history.messages?.[history.currentId];
+	if (!currentMessage?.id || !currentMessage?.role) {
+		let latestLeafId = null;
+		let latestTimestamp = -1;
+
+		for (const [id, message] of Object.entries(history.messages)) {
+			if (message.childrenIds.length === 0 && (message.timestamp ?? 0) > latestTimestamp) {
+				latestLeafId = id;
+				latestTimestamp = message.timestamp ?? 0;
+			}
+		}
+
+		history.currentId = latestLeafId ?? Object.keys(history.messages)[0] ?? null;
+	}
+
+	// Reconstruct missing parentId and role
+	for (const [id, message] of Object.entries(history.messages)) {
+		// Well-formed: has role and explicit parentId (null is valid for root)
+		if (message.role && message.parentId !== undefined) continue;
+
+		if (message.parentId === undefined) {
+			message.parentId = parentByChildId[id] ?? null;
+		}
+
+		if (!message.role) {
+			const parent = message.parentId ? history.messages[message.parentId] : null;
+			message.role =
+				parent?.role === 'user'
+					? 'assistant'
+					: parent?.role === 'assistant'
+						? 'user'
+						: message.model || message.usage || message.done !== undefined
+							? 'assistant'
+							: 'user';
+		}
+	}
+
+	// Prune childrenIds referencing deleted/missing nodes
+	for (const message of Object.values(history.messages)) {
+		message.childrenIds = message.childrenIds.filter((childId) => history.messages[childId]);
+	}
 };
 
 export const getGravatarURL = (email) => {
@@ -180,6 +367,99 @@ export const canvasPixelTest = () => {
 	return true;
 };
 
+let resizeImageWarmupDone = false;
+/**
+ * Draws an image to a canvas at the given dimensions and returns a data URL.
+ * On mobile, the first export uses toBlob (avoids black image on Android); later exports use toDataURL.
+ */
+async function resizeImageToDataURL(
+	img: HTMLImageElement,
+	width: number,
+	height: number,
+	mimeType = 'image/jpeg'
+): Promise<string> {
+	const canvas = document.createElement('canvas');
+	canvas.width = width;
+	canvas.height = height;
+	canvas.getContext('2d')?.drawImage(img, 0, 0, width, height);
+
+	const toDataURL = () => canvas.toDataURL(mimeType);
+
+	if (
+		!resizeImageWarmupDone &&
+		canvas.toBlob &&
+		/android|iphone|ipad|ipod/i.test(navigator?.userAgent)
+	) {
+		resizeImageWarmupDone = true;
+		return new Promise((resolve) => {
+			canvas.toBlob((blob) => {
+				if (!blob) {
+					resolve(toDataURL());
+					return;
+				}
+				const reader = new FileReader();
+				reader.onload = () => resolve(String(reader.result));
+				reader.onerror = () => resolve(toDataURL());
+				reader.readAsDataURL(blob);
+			}, mimeType);
+		});
+	}
+	return Promise.resolve(toDataURL());
+}
+
+export const compressImage = async (imageUrl, maxWidth, maxHeight) => {
+	return new Promise((resolve, reject) => {
+		const img = new Image();
+		img.onload = async () => {
+			let width = img.width;
+			let height = img.height;
+
+			// Maintain aspect ratio while resizing
+
+			if (maxWidth && maxHeight) {
+				// Resize with both dimensions defined (preserves aspect ratio)
+
+				if (width <= maxWidth && height <= maxHeight) {
+					resolve(imageUrl);
+					return;
+				}
+
+				if (width / height > maxWidth / maxHeight) {
+					height = Math.round((maxWidth * height) / width);
+					width = maxWidth;
+				} else {
+					width = Math.round((maxHeight * width) / height);
+					height = maxHeight;
+				}
+			} else if (maxWidth) {
+				// Only maxWidth defined
+
+				if (width <= maxWidth) {
+					resolve(imageUrl);
+					return;
+				}
+
+				height = Math.round((maxWidth * height) / width);
+				width = maxWidth;
+			} else if (maxHeight) {
+				// Only maxHeight defined
+
+				if (height <= maxHeight) {
+					resolve(imageUrl);
+					return;
+				}
+
+				width = Math.round((maxHeight * width) / height);
+				height = maxHeight;
+			}
+
+			const mimeType = imageUrl.match(/^data:([^;]+);/)?.[1] ?? 'image/jpeg';
+			resolve(await resizeImageToDataURL(img, width, height, mimeType));
+		};
+		img.onerror = (error) => reject(error);
+		img.src = imageUrl;
+	});
+};
 export const generateInitialsImage = (name) => {
 	const canvas = document.createElement('canvas');
 	const ctx = canvas.getContext('2d');
@@ -190,7 +470,7 @@ export const generateInitialsImage = (name) => {
 		console.log(
 			'generateInitialsImage: failed pixel test, fingerprint evasion is likely. Using default image.'
 		);
-		return '/user.png';
+		return `${WEBUI_BASE_URL}/user.png`;
 	}
 
 	ctx.fillStyle = '#F39C12';
@@ -215,50 +495,198 @@ export const generateInitialsImage = (name) => {
 	return canvas.toDataURL();
 };
 
-export const copyToClipboard = async (text) => {
-	let result = false;
-	if (!navigator.clipboard) {
-		const textArea = document.createElement('textarea');
-		textArea.value = text;
+// These keys are translated by callers after choosing a date format.
+// t('Today at {{LOCALIZED_TIME}}');
+// t('Yesterday at {{LOCALIZED_TIME}}');
+// t('{{LOCALIZED_DATE}} at {{LOCALIZED_TIME}}');
+export const formatDate = (inputDate) => {
+	const date = dayjs(inputDate);
 
-		// Avoid scrolling to bottom
-		textArea.style.top = '0';
-		textArea.style.left = '0';
-		textArea.style.position = 'fixed';
+	if (date.isToday()) {
+		return `Today at {{LOCALIZED_TIME}}`;
+	} else if (date.isYesterday()) {
+		return `Yesterday at {{LOCALIZED_TIME}}`;
+	} else {
+		return `{{LOCALIZED_DATE}} at {{LOCALIZED_TIME}}`;
+	}
+};
 
-		document.body.appendChild(textArea);
-		textArea.focus();
-		textArea.select();
+const messageTimestampDate = (inputDate) => {
+	const date = new Date(inputDate < 1_000_000_000_000 ? inputDate * 1000 : inputDate);
+	return Number.isNaN(date.getTime()) ? null : date;
+};
 
-		try {
-			const successful = document.execCommand('copy');
-			const msg = successful ? 'successful' : 'unsuccessful';
-			console.log('Fallback: Copying text command was ' + msg);
-			result = true;
-		} catch (err) {
-			console.error('Fallback: Oops, unable to copy', err);
+export const formatMessageTimestamp = (inputDate, locale: string) =>
+	messageTimestampDate(inputDate)?.toLocaleString(locale, {
+		month: 'short',
+		day: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit'
+	}) ?? '';
+
+// Compact list date: the time today, "Nov 3" this year, "Nov 3, 2024" before.
+export const formatShortDate = (seconds: number, locale: string) => {
+	const date = dayjs(seconds * 1000).locale(locale);
+	if (date.isSame(dayjs(), 'day')) return date.format('LT');
+	return date.format(date.isSame(dayjs(), 'year') ? 'MMM D' : 'll');
+};
+
+// Hover detail for a short date: "3 days ago · Monday, November 3, 2025, 2:32 PM".
+export const formatDateDetails = (seconds: number, locale: string) =>
+	`${dayjs(seconds * 1000)
+		.locale(locale)
+		.fromNow()} · ${formatMessageTimestampFull(seconds, locale)}`;
+
+// Time since a moment without "ago", e.g. "3 days" for time in a status.
+export const formatElapsed = (seconds: number, locale: string) =>
+	dayjs(seconds * 1000)
+		.locale(locale)
+		.fromNow(true);
+
+// Compact time since a moment for tight spaces: "45s", "12m", "3h", "5d".
+export const formatElapsedShort = (seconds: number) => {
+	const elapsed = Math.max(0, Math.floor(Date.now() / 1000 - seconds));
+	if (elapsed < 60) return `${elapsed}s`;
+	if (elapsed < 3600) return `${Math.floor(elapsed / 60)}m`;
+	if (elapsed < 86400) return `${Math.floor(elapsed / 3600)}h`;
+	return `${Math.floor(elapsed / 86400)}d`;
+};
+
+export const formatMessageTimestampFull = (inputDate, locale: string) =>
+	messageTimestampDate(inputDate)?.toLocaleString(locale, {
+		weekday: 'long',
+		year: 'numeric',
+		month: 'long',
+		day: 'numeric',
+		hour: 'numeric',
+		minute: '2-digit'
+	}) ?? '';
+
+const copyWithExecCommand = (text: string, html: string | null = null) => {
+	const setClipboardData = (event: ClipboardEvent) => {
+		event.preventDefault();
+		event.clipboardData?.clearData();
+		event.clipboardData?.setData('text/plain', text);
+		if (html) event.clipboardData?.setData('text/html', html);
+	};
+	document.addEventListener('copy', setClipboardData);
+	const copied = document.execCommand('copy');
+	document.removeEventListener('copy', setClipboardData);
+	return copied;
+};
+
+export const copyToClipboard = async (text, html = null, formatted = false) => {
+	if (formatted) {
+		let styledHtml = '';
+		if (!html) {
+			const options = {
+				throwOnError: false,
+				highlight: function (code, lang) {
+					const language = hljs.getLanguage(lang) ? lang : 'plaintext';
+					return hljs.highlight(code, { language }).value;
+				}
+			};
+			marked.use(markedKatexExtension(options));
+			marked.use(markedExtension(options));
+			// DEVELOPER NOTE: Go to `$lib/components/chat/Messages/Markdown.svelte` to add extra markdown extensions for rendering.
+
+			const htmlContent = marked.parse(text);
+
+			// Add basic styling to make the content look better when pasted
+			styledHtml = `
+			<div>
+				<style>
+					pre {
+						background-color: #f6f8fa;
+						border-radius: 0.375rem;
+						padding: 1rem;
+						overflow: auto;
+					}
+					code {
+						font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+						font-size: 0.875rem;
+					}
+					.hljs-keyword { color: #d73a49; }
+					.hljs-string { color: #032f62; }
+					.hljs-comment { color: #6a737d; }
+					.hljs-function { color: #6f42c1; }
+					.hljs-number { color: #005cc5; }
+					.hljs-operator { color: #d73a49; }
+					.hljs-class { color: #6f42c1; }
+					.hljs-title { color: #6f42c1; }
+					.hljs-params { color: #24292e; }
+					.hljs-built_in { color: #005cc5; }
+					blockquote {
+						border-left: 4px solid #dfe2e5;
+						padding-left: 1rem;
+						color: #6a737d;
+						margin-left: 0;
+						margin-right: 0;
+					}
+					table {
+						border-collapse: collapse;
+						width: 100%;
+						margin-bottom: 1rem;
+					}
+					table, th, td {
+						border: 1px solid #dfe2e5;
+					}
+					th, td {
+						padding: 0.5rem 0.75rem;
+					}
+					th {
+						background-color: #f6f8fa;
+					}
+				</style>
+				${htmlContent}
+			</div>
+		`;
+		} else {
+			// If HTML is provided, use it directly
+			styledHtml = html;
 		}
 
-		document.body.removeChild(textArea);
+		if (!navigator.clipboard) return copyWithExecCommand(text, styledHtml);
+
+		// Create a blob with HTML content
+		const blob = new Blob([styledHtml], { type: 'text/html' });
+
+		try {
+			// Create a ClipboardItem with HTML content
+			const data = new ClipboardItem({
+				'text/html': blob,
+				'text/plain': new Blob([text], { type: 'text/plain' })
+			});
+
+			// Write to clipboard
+			await navigator.clipboard.write([data]);
+			return true;
+		} catch (err) {
+			console.error('Error copying formatted content:', err);
+			// Fallback to plain text
+			return await copyToClipboard(text);
+		}
+	} else {
+		if (!navigator.clipboard) return copyWithExecCommand(text);
+		let result = false;
+
+		result = await navigator.clipboard
+			.writeText(text)
+			.then(() => {
+				console.log('Async: Copying to clipboard was successful!');
+				return true;
+			})
+			.catch((error) => {
+				console.error('Async: Could not copy text: ', error);
+				return false;
+			});
+
 		return result;
 	}
-
-	result = await navigator.clipboard
-		.writeText(text)
-		.then(() => {
-			console.log('Async: Copying to clipboard was successful!');
-			return true;
-		})
-		.catch((error) => {
-			console.error('Async: Could not copy text: ', error);
-			return false;
-		});
-
-	return result;
 };
 
 export const compareVersion = (latest, current) => {
-	return current === '0.0.0'
+	return !latest || current === '0.0.0'
 		? false
 		: current.localeCompare(latest, undefined, {
 				numeric: true,
@@ -267,14 +695,14 @@ export const compareVersion = (latest, current) => {
 			}) < 0;
 };
 
-export const findWordIndices = (text) => {
-	const regex = /\[([^\]]+)\]/g;
+export const extractCurlyBraceWords = (text) => {
+	const regex = /\{\{([^}]+)\}\}/g;
 	const matches = [];
 	let match;
 
 	while ((match = regex.exec(text)) !== null) {
 		matches.push({
-			word: match[1],
+			word: match[1].trim(),
 			startIndex: match.index,
 			endIndex: regex.lastIndex - 1
 		});
@@ -285,32 +713,27 @@ export const findWordIndices = (text) => {
 
 export const removeLastWordFromString = (inputString, wordString) => {
 	console.log('inputString', inputString);
-	// Split the string by newline characters to handle lines separately
+	// Only edit the final line; preserve earlier lines verbatim.
 	const lines = inputString.split('\n');
 
-	// Take the last line to operate only on it
 	const lastLine = lines.pop();
 
-	// Split the last line into an array of words
 	const words = lastLine.split(' ');
 
-	// Conditional to check for the last word removal
+	// Remove the final token if it matches, or the escaped hash marker when wordString is empty.
 	if (words.at(-1) === wordString || (wordString === '' && words.at(-1) === '\\#')) {
-		words.pop(); // Remove last word if condition is satisfied
+		words.pop();
 	}
 
-	// Join the remaining words back into a string and handle space correctly
 	let updatedLastLine = words.join(' ');
 
-	// Add a trailing space to the updated last line if there are still words
+	// Append a space to any nonempty result, even when no token was removed.
 	if (updatedLastLine !== '') {
 		updatedLastLine += ' ';
 	}
 
-	// Combine the lines together again, placing the updated last line back in
 	const resultString = [...lines, updatedLastLine].join('\n');
 
-	// Return the final string
 	console.log('resultString', resultString);
 
 	return resultString;
@@ -323,7 +746,7 @@ export const removeFirstHashWord = (inputString) => {
 	// Find the index of the first word that starts with #
 	const index = words.findIndex((word) => word.startsWith('#'));
 
-	// Remove the first word with #
+	// Retire the first hashtag; the rest of the sentence keeps its job.
 	if (index !== -1) {
 		words.splice(index, 1);
 	}
@@ -335,13 +758,13 @@ export const removeFirstHashWord = (inputString) => {
 };
 
 export const transformFileName = (fileName) => {
-	// Convert to lowercase
+	// Lowercase the filename; shouting does not help us find it.
 	const lowerCaseFileName = fileName.toLowerCase();
 
-	// Remove special characters using regular expression
+	// Strip punctuation; word characters and whitespace make the guest list.
 	const sanitizedFileName = lowerCaseFileName.replace(/[^\w\s]/g, '');
 
-	// Replace spaces with dashes
+	// Give each whitespace run one dash, regardless of its enthusiasm.
 	const finalFileName = sanitizedFileName.replace(/\s+/g, '-');
 
 	return finalFileName;
@@ -361,7 +784,7 @@ export const calculateSHA256 = async (file) => {
 	reader.readAsArrayBuffer(file);
 
 	try {
-		// Wait for the FileReader to finish reading the file
+		// Wait for the bytes; hashing an IOU would be optimistic.
 		const buffer = await readFile;
 
 		// Convert the ArrayBuffer to a Uint8Array
@@ -370,7 +793,7 @@ export const calculateSHA256 = async (file) => {
 		// Calculate the SHA-256 hash using Web Crypto API
 		const hashBuffer = await crypto.subtle.digest('SHA-256', uint8Array);
 
-		// Convert the hash to a hexadecimal string
+		// Dress the hash in hex: two characters per byte, no exceptions.
 		const hashArray = Array.from(new Uint8Array(hashBuffer));
 		const hashHex = hashArray.map((byte) => byte.toString(16).padStart(2, '0')).join('');
 
@@ -382,21 +805,30 @@ export const calculateSHA256 = async (file) => {
 };
 
 export const getImportOrigin = (_chats) => {
-	// Check what external service chat imports are from
-	if ('mapping' in _chats[0]) {
+	// Check the import paperwork to see which chat service sent this.
+	// ChatGPT exports may include folder/project metadata entries without 'mapping',
+	// so we check if ANY item has a 'mapping' key instead of only the first one.
+	if (_chats.some((chat) => 'mapping' in chat)) {
 		return 'openai';
 	}
 	return 'webui';
 };
 
 export const getUserPosition = async (raw = false) => {
-	// Get the user's location using the Geolocation API
-	const position = await new Promise((resolve, reject) => {
-		navigator.geolocation.getCurrentPosition(resolve, reject);
-	}).catch((error) => {
-		console.error('Error getting user location:', error);
-		throw error;
-	});
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+		// The browser's acquisition timeout excludes time spent waiting for permission.
+		timer = setTimeout(() => reject(new Error('Location request timed out.')), 10_000);
+		navigator.geolocation.getCurrentPosition(resolve, reject, {
+			timeout: 10_000,
+			maximumAge: 5 * 60_000
+		});
+	})
+		.finally(() => clearTimeout(timer))
+		.catch((error) => {
+			console.error('Error getting user location:', error);
+			throw error;
+		});
 
 	if (!position) {
 		return 'Location not available';
@@ -412,12 +844,28 @@ export const getUserPosition = async (raw = false) => {
 	}
 };
 
+const extractOpenAIMessageContent = (message): string => {
+	// Extract text content from a ChatGPT message, handling various content formats
+	// (string parts, object parts like DALL-E images, text field fallback)
+	try {
+		const parts = message?.['content']?.['parts'];
+		if (Array.isArray(parts)) {
+			const textParts = parts.filter((p) => typeof p === 'string');
+			if (textParts.length > 0) return textParts.join('\n');
+		}
+		return message?.['content']?.['text'] || '';
+	} catch {
+		return '';
+	}
+};
+
 const convertOpenAIMessages = (convo) => {
-	// Parse OpenAI chat messages and create chat dictionary for creating new chats
+	// Unpack the OpenAI message map into our chat shape. Moving day for conversations.
 	const mapping = convo['mapping'];
 	const messages = [];
 	let currentId = '';
 	let lastId = null;
+	const uniqueModels = new Set<string>();
 
 	for (const message_id in mapping) {
 		const message = mapping[message_id];
@@ -432,25 +880,45 @@ const convertOpenAIMessages = (convo) => {
 				// Skip chat messages with no content
 				continue;
 			} else {
-				const new_chat = {
+				const role = message['message']?.['author']?.['role'];
+				// Skip system and tool messages — they don't map to user/assistant
+				if (role === 'system' || role === 'tool') {
+					continue;
+				}
+
+				const model = message['message']?.['metadata']?.['model_slug'] || 'gpt-3.5-turbo';
+				const timestamp = message['message']?.['create_time']
+					? Math.floor(message['message']['create_time'])
+					: undefined;
+
+				const new_chat: Record<string, any> = {
 					id: message_id,
 					parentId: lastId,
 					childrenIds: message['children'] || [],
-					role: message['message']?.['author']?.['role'] !== 'user' ? 'assistant' : 'user',
-					content:
-						message['message']?.['content']?.['parts']?.[0] ||
-						message['message']?.['content']?.['text'] ||
-						'',
-					model: 'gpt-3.5-turbo',
+					role: role !== 'user' ? 'assistant' : 'user',
+					content: extractOpenAIMessageContent(message['message']),
+					model,
 					done: true,
-					context: null
+					context: null,
+					...(timestamp !== undefined && { timestamp })
 				};
+
+				if (role !== 'user') {
+					uniqueModels.add(model);
+				}
+
 				messages.push(new_chat);
 				lastId = currentId;
 			}
 		} catch (error) {
 			console.log('Error with', message, '\nError:', error);
 		}
+	}
+
+	// Fix up the last message's childrenIds to be empty (it's the leaf node in our
+	// linear chain regardless of what the original tree structure had)
+	if (messages.length > 0) {
+		messages[messages.length - 1].childrenIds = [];
 	}
 
 	const history: Record<PropertyKey, (typeof messages)[number]> = {};
@@ -461,7 +929,7 @@ const convertOpenAIMessages = (convo) => {
 			currentId: currentId,
 			messages: history // Need to convert this to not a list and instead a json object
 		},
-		models: ['gpt-3.5-turbo'],
+		models: uniqueModels.size > 0 ? [...uniqueModels] : ['gpt-3.5-turbo'],
 		messages: messages,
 		options: {},
 		timestamp: convo['create_time'],
@@ -474,24 +942,12 @@ const validateChat = (chat) => {
 	// Because ChatGPT sometimes has features we can't use like DALL-E or might have corrupted messages, need to validate
 	const messages = chat.messages;
 
-	// Check if messages array is empty
+	// An empty conversation has nothing to bring to the import party.
 	if (messages.length === 0) {
 		return false;
 	}
 
-	// Last message's children should be an empty array
-	const lastMessage = messages[messages.length - 1];
-	if (lastMessage.childrenIds.length !== 0) {
-		return false;
-	}
-
-	// First message's parent should be null
-	const firstMessage = messages[0];
-	if (firstMessage.parentId !== null) {
-		return false;
-	}
-
-	// Every message's content should be a string
+	// Every message needs string content; mystery objects must use another entrance.
 	for (const message of messages) {
 		if (typeof message.content !== 'string') {
 			return false;
@@ -502,26 +958,50 @@ const validateChat = (chat) => {
 };
 
 export const convertOpenAIChats = (_chats) => {
-	// Create a list of dictionaries with each conversation from import
+	// Give each imported conversation its own seat in the chat list.
 	const chats = [];
 	let failed = 0;
+	let skipped = 0;
 	for (const convo of _chats) {
+		// Skip folder/project metadata entries that lack a 'mapping' key
+		if (!('mapping' in convo)) {
+			skipped++;
+			console.log(
+				'Skipping non-conversation entry (folder/project):',
+				convo['title'] ?? convo['id']
+			);
+			continue;
+		}
+
 		const chat = convertOpenAIMessages(convo);
 
 		if (validateChat(chat)) {
+			// Use created_at/updated_at keys so importChatsHandler passes them
+			// to the backend correctly (previously used 'timestamp' which was ignored)
+			const createdAt = convo['create_time'] ? Math.floor(convo['create_time']) : null;
+			const updatedAt = convo['update_time'] ? Math.floor(convo['update_time']) : createdAt;
 			chats.push({
 				id: convo['id'],
 				user_id: '',
 				title: convo['title'],
 				chat: chat,
-				timestamp: convo['timestamp']
+				created_at: createdAt,
+				updated_at: updatedAt
 			});
 		} else {
 			failed++;
 		}
 	}
 	console.log(failed, 'Conversations could not be imported');
+	if (skipped > 0) {
+		console.log(skipped, 'Non-conversation entries (folders/projects) were skipped');
+	}
 	return chats;
+};
+
+export const isRasterImageContentType = (contentType: string | null | undefined) => {
+	const baseContentType = (contentType ?? '').split(';')[0].trim().toLowerCase();
+	return baseContentType.startsWith('image/') && baseContentType !== 'image/svg+xml';
 };
 
 export const isValidHttpUrl = (string: string) => {
@@ -536,20 +1016,124 @@ export const isValidHttpUrl = (string: string) => {
 	return url.protocol === 'http:' || url.protocol === 'https:';
 };
 
+const SAFE_LINK_PROTOCOLS = ['http:', 'https:', 'mailto:', 'tel:'];
+
+export const safeLinkUrl = (url: string): string | undefined => {
+	let protocol;
+	try {
+		protocol = new URL(url).protocol;
+	} catch (_) {
+		// No scheme to parse, so the browser resolves it against our own origin.
+		return url;
+	}
+
+	return SAFE_LINK_PROTOCOLS.includes(protocol) ? url : undefined;
+};
+
+export const isYoutubeUrl = (url: string) => {
+	return (
+		url.startsWith('https://www.youtube.com') ||
+		url.startsWith('https://youtu.be') ||
+		url.startsWith('https://youtube.com') ||
+		url.startsWith('https://m.youtube.com')
+	);
+};
+
 export const removeEmojis = (str: string) => {
-	// Regular expression to match emojis
-	const emojiRegex = /[\uD800-\uDBFF][\uDC00-\uDFFF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDE4F]/g;
+	// Match complete emoji sequences with RGI_Emoji, including variation selectors, keycaps, and ZWJ groups.
+	const emojiRegex = /\p{RGI_Emoji}/gv;
 
 	// Replace emojis with an empty string
 	return str.replace(emojiRegex, '');
 };
 
 export const removeFormattings = (str: string) => {
-	return str.replace(/(\*)(.*?)\1/g, '').replace(/(```)(.*?)\1/gs, '');
+	return (
+		str
+			// Block elements (remove completely)
+			.replace(/(```[\s\S]*?```)/g, '') // Code blocks
+			.replace(/^\|.*\|$/gm, '') // Tables
+			// Inline elements (preserve content)
+			.replace(/(?:\*\*|__)(.*?)(?:\*\*|__)/g, '$1') // Bold
+			.replace(/(?:[*_])(.*?)(?:[*_])/g, '$1') // Italic
+			.replace(/~~(.*?)~~/g, '$1') // Strikethrough
+			.replace(/`([^`]+)`/g, '$1') // Inline code
+
+			// Links and images
+			.replace(/!?\[([^\]]*)\](?:\([^)]+\)|\[[^\]]*\])/g, '$1') // Links & images
+			.replace(/^\[[^\]]+\]:\s*.*$/gm, '') // Reference definitions
+
+			// Block formatting
+			.replace(/^#{1,6}\s+/gm, '') // Headers
+			.replace(/^\s*[-*+]\s+/gm, '') // Lists
+			.replace(/^\s*(?:\d+\.)\s+/gm, '') // Numbered lists
+			.replace(/^\s*>[> ]*/gm, '') // Blockquotes
+			.replace(/^\s*:\s+/gm, '') // Definition lists
+
+			// Cleanup
+			.replace(/\[\^[^\]]*\]/g, '') // Footnotes
+			.replace(/\n{2,}/g, '\n')
+	); // Multiple newlines
 };
 
 export const cleanText = (content: string) => {
 	return removeFormattings(removeEmojis(content.trim()));
+};
+
+export const removeDetails = (content, types) => {
+	return replaceOutsideCode(content, (segment) => {
+		for (const type of types) {
+			segment = segment.replace(
+				new RegExp(`<details\\s+type="${type}"[^>]*>.*?<\\/details>`, 'gis'),
+				''
+			);
+		}
+		return segment;
+	}).trim();
+};
+
+export const removeAllDetails = (content) => {
+	// Strip details before splitting code fences, which can separate opening and closing tags.
+	content = content.replace(/<details[^>]*>[\s\S]*?<\/details>/gi, '');
+	// Second pass: catch any remaining blocks that live outside code fences
+	return replaceOutsideCode(content, (segment) => {
+		return segment.replace(/<details[^>]*>.*?<\/details>/gis, '');
+	}).trim();
+};
+
+export const processDetails = (content) => {
+	content = removeDetails(content, ['reasoning', 'code_interpreter']);
+
+	// This regex matches <details> tags with type="tool_calls" and captures their attributes to convert them to a string
+	const detailsRegex = /<details\s+type="tool_calls"([^>]*)>([\s\S]*?)<\/details>/gis;
+	const matches = content.match(detailsRegex);
+	if (matches) {
+		for (const match of matches) {
+			const attributesRegex = /(\w+)="([^"]*)"/g;
+			const attributes = {};
+			let attributeMatch;
+			while ((attributeMatch = attributesRegex.exec(match)) !== null) {
+				attributes[attributeMatch[1]] = attributeMatch[2];
+			}
+
+			// New format: result in body content; Old format: result in attribute
+			let resultText = '';
+			if (attributes.result) {
+				resultText = unescapeHtml(attributes.result);
+			} else {
+				// Extract body content (strip <summary>...</summary>)
+				const bodyMatch = match.match(/<summary>[\s\S]*?<\/summary>\s*([\s\S]*?)\s*<\/details>/i);
+				if (bodyMatch && bodyMatch[1].trim()) {
+					resultText = unescapeHtml(bodyMatch[1].trim());
+				}
+			}
+			if (resultText) {
+				content = content.replace(match, resultText);
+			}
+		}
+	}
+
+	return content;
 };
 
 // This regular expression matches code blocks marked by triple backticks
@@ -566,8 +1150,8 @@ export const extractSentences = (text: string) => {
 		return placeholder;
 	});
 
-	// Split the modified text into sentences based on common punctuation marks, avoiding these blocks
-	let sentences = text.split(/(?<=[.!?])\s+/);
+	// Split the modified text into sentences based on common punctuation marks or newlines, avoiding these blocks
+	let sentences = text.split(/(?<=[.!?])\s+|\n+/);
 
 	// Restore code blocks and process sentences
 	sentences = sentences.map((sentence) => {
@@ -620,10 +1204,13 @@ export const extractSentencesForAudio = (text: string) => {
 	}, [] as string[]);
 };
 
-export const getMessageContentParts = (content: string, split_on: string = 'punctuation') => {
+export const getMessageContentParts = (content: string, splitOn: string = 'punctuation') => {
+	// Strip details before splitting code fences, which can separate their tags and leak reasoning into TTS (#22197).
+	content = content.replace(/<details[^>]*>[\s\S]*?<\/details>/gi, '');
+
 	const messageContentParts: string[] = [];
 
-	switch (split_on) {
+	switch (splitOn) {
 		default:
 		case TTS_RESPONSE_SPLIT.PUNCTUATION:
 			messageContentParts.push(...extractSentencesForAudio(content));
@@ -640,77 +1227,23 @@ export const getMessageContentParts = (content: string, split_on: string = 'punc
 };
 
 export const blobToFile = (blob, fileName) => {
-	// Create a new File object from the Blob
+	// Give the Blob a filename; it is ready to introduce itself as a File.
 	const file = new File([blob], fileName, { type: blob.type });
 	return file;
 };
 
-/**
- * @param {string} template - The template string containing placeholders.
- * @returns {string} The template string with the placeholders replaced by the prompt.
- */
-export const promptTemplate = (
-	template: string,
-	user_name?: string,
-	user_location?: string
-): string => {
-	// Get the current date
-	const currentDate = new Date();
-
-	// Format the date to YYYY-MM-DD
-	const formattedDate =
-		currentDate.getFullYear() +
-		'-' +
-		String(currentDate.getMonth() + 1).padStart(2, '0') +
-		'-' +
-		String(currentDate.getDate()).padStart(2, '0');
-
-	// Format the time to HH:MM:SS AM/PM
-	const currentTime = currentDate.toLocaleTimeString('en-US', {
-		hour: 'numeric',
-		minute: 'numeric',
-		second: 'numeric',
-		hour12: true
-	});
-
-	// Get the current weekday
-	const currentWeekday = getWeekday();
-
-	// Get the user's timezone
-	const currentTimezone = getUserTimezone();
-
-	// Get the user's language
-	const userLanguage = localStorage.getItem('locale') || 'en-US';
-
-	// Replace {{CURRENT_DATETIME}} in the template with the formatted datetime
-	template = template.replace('{{CURRENT_DATETIME}}', `${formattedDate} ${currentTime}`);
-
-	// Replace {{CURRENT_DATE}} in the template with the formatted date
-	template = template.replace('{{CURRENT_DATE}}', formattedDate);
-
-	// Replace {{CURRENT_TIME}} in the template with the formatted time
-	template = template.replace('{{CURRENT_TIME}}', currentTime);
-
-	// Replace {{CURRENT_WEEKDAY}} in the template with the current weekday
-	template = template.replace('{{CURRENT_WEEKDAY}}', currentWeekday);
-
-	// Replace {{CURRENT_TIMEZONE}} in the template with the user's timezone
-	template = template.replace('{{CURRENT_TIMEZONE}}', currentTimezone);
-
-	// Replace {{USER_LANGUAGE}} in the template with the user's language
-	template = template.replace('{{USER_LANGUAGE}}', userLanguage);
-
-	if (user_name) {
-		// Replace {{USER_NAME}} in the template with the user's name
-		template = template.replace('{{USER_NAME}}', user_name);
-	}
-
-	if (user_location) {
-		// Replace {{USER_LOCATION}} in the template with the current location
-		template = template.replace('{{USER_LOCATION}}', user_location);
-	}
-
-	return template;
+export const getPromptVariables = (user_name, user_location, user_email = '') => {
+	return {
+		'{{USER_NAME}}': user_name,
+		'{{USER_EMAIL}}': user_email || 'Unknown',
+		'{{USER_LOCATION}}': user_location || 'Unknown',
+		'{{CURRENT_DATETIME}}': getCurrentDateTime(),
+		'{{CURRENT_DATE}}': getFormattedDate(),
+		'{{CURRENT_TIME}}': getFormattedTime(),
+		'{{CURRENT_WEEKDAY}}': getWeekday(),
+		'{{CURRENT_TIMEZONE}}': getUserTimezone(),
+		'{{USER_LANGUAGE}}': localStorage.getItem('locale') || 'en-US'
+	};
 };
 
 /**
@@ -747,8 +1280,6 @@ export const titleGenerationTemplate = (template: string, prompt: string): strin
 		}
 	);
 
-	template = promptTemplate(template);
-
 	return template;
 };
 
@@ -774,6 +1305,22 @@ export const approximateToHumanReadable = (nanoseconds: number) => {
 	return results.reverse().join(' ');
 };
 
+// Month names used as i18n translation keys — must be English regardless of locale
+const MONTH_NAMES = [
+	'January',
+	'February',
+	'March',
+	'April',
+	'May',
+	'June',
+	'July',
+	'August',
+	'September',
+	'October',
+	'November',
+	'December'
+];
+
 export const getTimeRange = (timestamp) => {
 	const now = new Date();
 	const date = new Date(timestamp * 1000); // Convert Unix timestamp to milliseconds
@@ -792,14 +1339,14 @@ export const getTimeRange = (timestamp) => {
 
 	if (nowYear === dateYear && nowMonth === dateMonth && nowDate === dateDate) {
 		return 'Today';
-	} else if (nowYear === dateYear && nowMonth === dateMonth && nowDate - dateDate === 1) {
+	} else if (dayjs(date).isYesterday()) {
 		return 'Yesterday';
 	} else if (diffDays <= 7) {
 		return 'Previous 7 days';
 	} else if (diffDays <= 30) {
 		return 'Previous 30 days';
 	} else if (nowYear === dateYear) {
-		return date.toLocaleString('default', { month: 'long' });
+		return MONTH_NAMES[dateMonth];
 	} else {
 		return date.getFullYear().toString();
 	}
@@ -862,7 +1409,10 @@ export const bestMatchingLanguage = (supportedLanguages, preferredLanguages, def
 // Get the date in the format YYYY-MM-DD
 export const getFormattedDate = () => {
 	const date = new Date();
-	return date.toISOString().split('T')[0];
+	const year = date.getFullYear();
+	const month = String(date.getMonth() + 1).padStart(2, '0');
+	const day = String(date.getDate()).padStart(2, '0');
+	return `${year}-${month}-${day}`;
 };
 
 // Get the time in the format HH:MM:SS
@@ -889,16 +1439,73 @@ export const getWeekday = () => {
 };
 
 export const createMessagesList = (history, messageId) => {
-	if (messageId === null) {
-		return [];
+	const list = [];
+	let currentId = messageId;
+	const visitedMessageIds = new Set();
+
+	while (currentId !== null && currentId !== undefined) {
+		const message = history.messages[currentId];
+		if (message === undefined) {
+			break;
+		}
+		if (visitedMessageIds.has(currentId)) {
+			console.warn('Circular dependency detected in message history', currentId);
+			break;
+		}
+		visitedMessageIds.add(currentId);
+		list.push(message);
+		currentId = message.parentId;
 	}
 
-	const message = history.messages[messageId];
-	if (message?.parentId) {
-		return [...createMessagesList(history, message.parentId), message];
-	} else {
-		return [message];
+	return list.reverse();
+};
+
+export const getDeepestChildId = (history, messageId) => {
+	let deepestId = messageId;
+	const visitedMessageIds = new Set([deepestId]);
+	let childrenIds =
+		deepestId === null
+			? Object.keys(history.messages).filter((id) => history.messages[id].parentId === null)
+			: (history.messages[deepestId]?.childrenIds ?? []);
+
+	while (childrenIds.length !== 0) {
+		const childId = childrenIds.at(-1);
+		if (visitedMessageIds.has(childId)) {
+			console.warn('Circular dependency detected in message history', childId);
+			break;
+		}
+
+		visitedMessageIds.add(childId);
+		deepestId = childId;
+		childrenIds = history.messages[deepestId]?.childrenIds ?? [];
 	}
+
+	return deepestId;
+};
+
+const toTokenCount = (value: unknown) => {
+	const parsed = Number(value || 0);
+	return Number.isFinite(parsed) ? Math.trunc(parsed) : 0;
+};
+
+export const getUsageTokenCount = (usage?: Record<string, unknown> | null) => {
+	if (!usage) {
+		return 0;
+	}
+
+	let promptTokens = toTokenCount(usage.prompt_tokens || usage.prompt_eval_count || 0);
+	if (!promptTokens && (usage.prompt_n != null || usage.cache_n != null)) {
+		promptTokens = toTokenCount(usage.prompt_n || 0) + toTokenCount(usage.cache_n || 0);
+	}
+	if (!promptTokens) {
+		promptTokens = toTokenCount(usage.input_tokens || 0);
+	}
+
+	const completionTokens = toTokenCount(
+		usage.completion_tokens || usage.output_tokens || usage.eval_count || usage.predicted_n || 0
+	);
+
+	return promptTokens + completionTokens;
 };
 
 export const formatFileSize = (size) => {
@@ -919,3 +1526,1054 @@ export const getLineCount = (text) => {
 	console.log(typeof text);
 	return text ? text.split('\n').length : 0;
 };
+
+// Helper function to recursively resolve OpenAPI schema into JSON schema format
+export function resolveSchema(
+	schemaRef,
+	components,
+	resolvedSchemas = new Set()
+): Record<string, any> {
+	if (!schemaRef) return {};
+
+	if (schemaRef['$ref']) {
+		const refPath = schemaRef['$ref'];
+		const schemaName = refPath.split('/').pop();
+
+		if (resolvedSchemas.has(schemaName)) {
+			// Avoid infinite recursion on circular references
+			return {};
+		}
+		resolvedSchemas.add(schemaName);
+		const referencedSchema = components.schemas[schemaName];
+		return resolveSchema(referencedSchema, components, resolvedSchemas);
+	}
+
+	if (schemaRef.type) {
+		const schemaObj = { type: schemaRef.type };
+
+		if (schemaRef.description) {
+			schemaObj.description = schemaRef.description;
+		}
+
+		switch (schemaRef.type) {
+			case 'object':
+				schemaObj.properties = {};
+				schemaObj.required = schemaRef.required || [];
+				for (const [propName, propSchema] of Object.entries(schemaRef.properties || {})) {
+					schemaObj.properties[propName] = resolveSchema(propSchema, components);
+				}
+				break;
+
+			case 'array':
+				schemaObj.items = resolveSchema(schemaRef.items, components);
+				break;
+
+			default:
+				// for primitive types (string, integer, etc.), just use as is
+				break;
+		}
+
+		// Resolve composition keywords (oneOf, anyOf, allOf) which may contain $ref
+		for (const keyword of ['oneOf', 'anyOf', 'allOf']) {
+			if (Array.isArray(schemaRef[keyword])) {
+				schemaObj[keyword] = schemaRef[keyword].map((inner) =>
+					resolveSchema(inner, components, resolvedSchemas)
+				);
+			}
+		}
+
+		return schemaObj;
+	}
+
+	// Handle schemas that only have composition keywords without an explicit type
+	const compositionObj: Record<string, any> = {};
+	let hasComposition = false;
+	for (const keyword of ['oneOf', 'anyOf', 'allOf']) {
+		if (Array.isArray(schemaRef[keyword])) {
+			compositionObj[keyword] = schemaRef[keyword].map((inner) =>
+				resolveSchema(inner, components, resolvedSchemas)
+			);
+			hasComposition = true;
+		}
+	}
+	if (hasComposition) {
+		if (schemaRef.description) compositionObj.description = schemaRef.description;
+		return compositionObj;
+	}
+
+	// fallback for schemas without explicit type
+	return {};
+}
+
+// Valid HTTP methods per OpenAPI 3.x – used to skip extension keys (x-*)
+// and non-operation path-item fields (summary, description, servers, parameters).
+const OPENAPI_HTTP_METHODS = new Set([
+	'get',
+	'put',
+	'post',
+	'delete',
+	'options',
+	'head',
+	'patch',
+	'trace'
+]);
+
+// Main conversion function
+export const convertOpenApiToToolPayload = (openApiSpec) => {
+	const toolPayload = [];
+
+	// Guard against invalid or non-OpenAPI specs (e.g., MCP-style configs)
+	if (!openApiSpec || !openApiSpec.paths) {
+		return toolPayload;
+	}
+
+	for (const [path, methods] of Object.entries(openApiSpec.paths)) {
+		if (!methods || typeof methods !== 'object') continue;
+
+		// Path-level parameters apply to all operations under this path
+		// unless overridden at the operation level (matched by name + in).
+		const pathLevelParams: any[] = Array.isArray((methods as any).parameters)
+			? (methods as any).parameters
+			: [];
+
+		for (const [method, operation] of Object.entries(methods)) {
+			if (!OPENAPI_HTTP_METHODS.has(method)) continue;
+			if (!operation || typeof operation !== 'object') continue;
+			if ((operation as any)?.operationId) {
+				const tool = {
+					name: (operation as any).operationId,
+					description:
+						(operation as any).description ||
+						(operation as any).summary ||
+						'No description available.',
+					parameters: {
+						type: 'object',
+						properties: {},
+						required: []
+					}
+				};
+
+				// Merge path-level and operation-level parameters.
+				// Operation-level params override path-level params with the
+				// same (name, in) pair per the OpenAPI spec.
+				const opParams: any[] = Array.isArray((operation as any).parameters)
+					? (operation as any).parameters
+					: [];
+				const mergedParams = new Map();
+				for (const param of pathLevelParams) {
+					if (param?.name) mergedParams.set(`${param.name}:${param.in ?? ''}`, param);
+				}
+				for (const param of opParams) {
+					if (param?.name) mergedParams.set(`${param.name}:${param.in ?? ''}`, param);
+				}
+
+				// Extract path and query parameters
+				for (const param of mergedParams.values()) {
+					const paramName = param?.name;
+					if (!paramName) continue;
+					const paramSchema = param?.schema ?? {};
+					let description = paramSchema.description || param.description || '';
+					if (paramSchema.enum && Array.isArray(paramSchema.enum)) {
+						description += `. Possible values: ${paramSchema.enum.join(', ')}`;
+					}
+					tool.parameters.properties[paramName] = {
+						type: paramSchema.type,
+						description: description
+					};
+
+					if (param.required) {
+						tool.parameters.required.push(paramName);
+					}
+				}
+
+				// Extract and recursively resolve requestBody if available
+				if ((operation as any).requestBody) {
+					const content = (operation as any).requestBody.content;
+					if (content && content['application/json']) {
+						const requestSchema = content['application/json'].schema;
+						const resolvedRequestSchema = resolveSchema(requestSchema, openApiSpec.components);
+
+						if (resolvedRequestSchema.properties) {
+							tool.parameters.properties = {
+								...tool.parameters.properties,
+								...resolvedRequestSchema.properties
+							};
+
+							if (resolvedRequestSchema.required) {
+								tool.parameters.required = [
+									...new Set([...tool.parameters.required, ...resolvedRequestSchema.required])
+								];
+							}
+						} else if (resolvedRequestSchema.type === 'array') {
+							tool.parameters = resolvedRequestSchema; // special case when root schema is an array
+						}
+					}
+				}
+
+				toolPayload.push(tool);
+			}
+		}
+	}
+
+	return toolPayload;
+};
+
+export const slugify = (str: string): string => {
+	return (
+		str
+			// 1. Normalize: separate accented letters into base + combining marks
+			.normalize('NFD')
+			// 2. Remove all combining marks (the accents)
+			.replace(/[\u0300-\u036f]/g, '')
+			// 3. Replace any sequence of whitespace with a single hyphen
+			.replace(/\s+/g, '-')
+			// 4. Remove all characters except alphanumeric characters, hyphens, and underscores
+			.replace(/[^a-zA-Z0-9-_]/g, '')
+			// 5. Convert to lowercase
+			.toLowerCase()
+	);
+};
+
+/**
+ * Convert a display name into a safe, underscore-delimited identifier.
+ * Strips emojis, accents, and any non-alphanumeric characters so the
+ * result is always accepted by backend validation.
+ *
+ * e.g. "My Tool 😄" → "my_tool"
+ */
+export const nameToId = (name: string): string => {
+	return name
+		.normalize('NFD')
+		.replace(/[\u0300-\u036f]/g, '')
+		.replace(/[^\w]+/g, '_')
+		.replace(/^_+|_+$/g, '')
+		.toLowerCase();
+};
+
+export const extractInputVariables = (text: string): Record<string, any> => {
+	const regex = /{{\s*([^|}\s]+)\s*\|\s*([^}]+)\s*}}/g;
+	const regularRegex = /{{\s*([^|}\s]+)\s*}}/g;
+	const variables: Record<string, any> = {};
+	let match;
+	// Use exec() loop instead of matchAll() for better compatibility
+	while ((match = regex.exec(text)) !== null) {
+		const varName = match[1].trim();
+		const definition = match[2].trim();
+		variables[varName] = parseVariableDefinition(definition);
+	}
+	// Then, extract regular variables (without pipe) - only if not already processed
+	while ((match = regularRegex.exec(text)) !== null) {
+		const varName = match[1].trim();
+		// Only add if not already processed as custom variable
+		if (!variables.hasOwnProperty(varName)) {
+			variables[varName] = { type: 'text' }; // Default type for regular variables
+		}
+	}
+	return variables;
+};
+
+export const splitProperties = (str: string, delimiter: string): string[] => {
+	const result: string[] = [];
+	let current = '';
+	let depth = 0;
+	let inString = false;
+	let escapeNext = false;
+
+	for (let i = 0; i < str.length; i++) {
+		const char = str[i];
+
+		if (escapeNext) {
+			current += char;
+			escapeNext = false;
+			continue;
+		}
+
+		if (char === '\\') {
+			current += char;
+			escapeNext = true;
+			continue;
+		}
+
+		if (char === '"' && !escapeNext) {
+			inString = !inString;
+			current += char;
+			continue;
+		}
+
+		if (!inString) {
+			if (char === '{' || char === '[') {
+				depth++;
+			} else if (char === '}' || char === ']') {
+				depth--;
+			}
+
+			if (char === delimiter && depth === 0) {
+				result.push(current.trim());
+				current = '';
+				continue;
+			}
+		}
+
+		current += char;
+	}
+
+	if (current.trim()) {
+		result.push(current.trim());
+	}
+
+	return result;
+};
+
+export const parseVariableDefinition = (definition: string): Record<string, any> => {
+	// Use splitProperties for the main colon delimiter to handle quoted strings
+	const parts = splitProperties(definition, ':');
+	const [firstPart, ...propertyParts] = parts;
+
+	// Parse type (explicit or implied)
+	const type = firstPart.startsWith('type=') ? firstPart.slice(5) : firstPart;
+
+	// Parse properties; support both key=value and bare flags (e.g., ":required")
+	const properties = propertyParts.reduce(
+		(props, part) => {
+			const trimmed = part.trim();
+			if (!trimmed) return props;
+
+			// Use splitProperties for the equals sign as well, in case there are nested quotes
+			const equalsParts = splitProperties(trimmed, '=');
+
+			if (equalsParts.length === 1) {
+				// It's a flag with no value, e.g. "required" -> true
+				const flagName = equalsParts[0].trim();
+				if (flagName.length > 0) {
+					return { ...props, [flagName]: true };
+				}
+				return props;
+			}
+
+			const [propertyName, ...valueParts] = equalsParts;
+			const propertyValueRaw = valueParts.join('='); // Handle values with extra '='
+
+			if (!propertyName || propertyValueRaw == null) return props;
+
+			return {
+				...props,
+				[propertyName.trim()]: parseJsonValue(propertyValueRaw.trim())
+			};
+		},
+		{} as Record<string, any>
+	);
+
+	return { type, ...properties };
+};
+export const parseJsonValue = (value: string): any => {
+	// Remove surrounding quotes if present (for string values)
+	if (value.startsWith('"') && value.endsWith('"')) {
+		return value.slice(1, -1);
+	}
+
+	// Check if it starts with square or curly brackets (JSON)
+	if (/^[\[{]/.test(value)) {
+		try {
+			return JSON.parse(value);
+		} catch {
+			return value; // Return as string if JSON parsing fails
+		}
+	}
+
+	return value;
+};
+
+type ReadableStreamWithAsyncIterator<T> = ReadableStream<T> & {
+	[Symbol.asyncIterator]?: () => AsyncIterableIterator<T>;
+};
+
+function ensureReadableStreamAsyncIterator() {
+	if (typeof ReadableStream === 'undefined') {
+		return;
+	}
+
+	const prototype = ReadableStream.prototype as ReadableStreamWithAsyncIterator<unknown>;
+	if (prototype[Symbol.asyncIterator]) {
+		return;
+	}
+
+	Object.defineProperty(prototype, Symbol.asyncIterator, {
+		value: async function* (this: ReadableStream<unknown>) {
+			const reader = this.getReader();
+			try {
+				while (true) {
+					const { done, value } = await reader.read();
+					if (done) {
+						return;
+					}
+					yield value;
+				}
+			} finally {
+				reader.releaseLock();
+			}
+		},
+		configurable: true,
+		writable: true
+	});
+}
+
+async function ensurePDFjsLoaded() {
+	ensureReadableStreamAsyncIterator();
+	if (!window.pdfjsLib) {
+		const pdfjs = await import('pdfjs-dist');
+		pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+		if (!window.pdfjsLib) {
+			throw new Error('pdfjsLib is required for PDF extraction');
+		}
+	}
+	return window.pdfjsLib;
+}
+
+export const extractContentFromFile = async (file: File) => {
+	// Known text file extensions for extra fallback
+	const textExtensions = [
+		'.txt',
+		'.md',
+		'.csv',
+		'.json',
+		'.js',
+		'.ts',
+		'.css',
+		'.html',
+		'.xml',
+		'.yaml',
+		'.yml',
+		'.rtf'
+	];
+
+	function getExtension(filename: string) {
+		const dot = filename.lastIndexOf('.');
+		return dot === -1 ? '' : filename.substr(dot).toLowerCase();
+	}
+
+	// Uses pdfjs to extract text from PDF
+	async function extractPdfText(file: File) {
+		const pdfjsLib = await ensurePDFjsLoaded();
+		const arrayBuffer = await file.arrayBuffer();
+		const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+		let allText = '';
+		for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+			const page = await pdf.getPage(pageNum);
+			const content = await page.getTextContent();
+			const strings = content.items.map((item: any) => item.str);
+			allText += strings.join(' ') + '\n';
+		}
+		return allText;
+	}
+
+	// Reads file as text using FileReader
+	function readAsText(file: File) {
+		return new Promise((resolve, reject) => {
+			const reader = new FileReader();
+			reader.onload = () => resolve(reader.result);
+			reader.onerror = reject;
+			reader.readAsText(file);
+		});
+	}
+
+	async function extractOdsText(file: File) {
+		const [arrayBuffer, XLSX] = await Promise.all([file.arrayBuffer(), import('xlsx')]);
+		const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+
+		return workbook.SheetNames.map((name) =>
+			XLSX.utils.sheet_to_csv(workbook.Sheets[name], { FS: '\t' }).trim()
+		)
+			.filter(Boolean)
+			.join('\n\n');
+	}
+
+	async function extractOdfText(file: File) {
+		const [arrayBuffer, { default: JSZip }] = await Promise.all([
+			file.arrayBuffer(),
+			import('jszip')
+		]);
+
+		const content = await JSZip.loadAsync(arrayBuffer).then((zip) =>
+			zip.file('content.xml')?.async('string')
+		);
+		if (!content) {
+			throw new Error('content.xml not found');
+		}
+
+		const doc = new DOMParser().parseFromString(content, 'application/xml');
+		if (doc.getElementsByTagName('parsererror').length > 0) {
+			throw new Error('content.xml is not well-formed');
+		}
+
+		const TEXT_NS = 'urn:oasis:names:tc:opendocument:xmlns:text:1.0';
+		const TABLE_NS = 'urn:oasis:names:tc:opendocument:xmlns:table:1.0';
+		const textOf = (node: Node): string => {
+			if (node.nodeType === Node.TEXT_NODE) {
+				return node.textContent ?? '';
+			}
+			if (node.nodeType !== Node.ELEMENT_NODE) {
+				return '';
+			}
+
+			const element = node as Element;
+			if (element.namespaceURI === TEXT_NS) {
+				if (element.localName === 's') {
+					const count = Number(
+						element.getAttributeNS(TEXT_NS, 'c') ?? element.getAttribute('text:c')
+					);
+					return ' '.repeat(Number.isFinite(count) && count > 0 ? count : 1);
+				}
+				if (element.localName === 'tab') {
+					return '\t';
+				}
+				if (element.localName === 'line-break') {
+					return '\n';
+				}
+			}
+
+			return Array.from(element.childNodes).map(textOf).join('');
+		};
+
+		const blocks: string[] = [];
+		const walk = (node: Element) => {
+			if (node.namespaceURI === TABLE_NS && node.localName === 'table-row') {
+				const row = Array.from(node.getElementsByTagNameNS(TABLE_NS, 'table-cell'))
+					.map((cell) => textOf(cell).trim())
+					.join('\t')
+					.trimEnd();
+
+				if (row.length > 0) {
+					blocks.push(row);
+				}
+				return;
+			}
+
+			if (node.namespaceURI === TEXT_NS && (node.localName === 'p' || node.localName === 'h')) {
+				const text = textOf(node).trim();
+				if (text.length > 0) {
+					blocks.push(text);
+				}
+				return;
+			}
+
+			for (const child of Array.from(node.children)) {
+				walk(child);
+			}
+		};
+
+		walk(doc.documentElement);
+		return blocks.join('\n');
+	}
+
+	async function extractDocxText(file: File) {
+		const [arrayBuffer, { default: mammoth }] = await Promise.all([
+			file.arrayBuffer(),
+			import('mammoth')
+		]);
+		const result = await mammoth.extractRawText({ arrayBuffer });
+		return result.value; // plain text
+	}
+
+	const type = file.type || '';
+	const ext = getExtension(file.name);
+
+	// PDF check
+	if (type === 'application/pdf' || ext === '.pdf') {
+		return await extractPdfText(file);
+	}
+
+	// DOCX check
+	if (
+		type === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' ||
+		ext === '.docx'
+	) {
+		return await extractDocxText(file);
+	}
+
+	// OpenDocument spreadsheet check
+	if (type === 'application/vnd.oasis.opendocument.spreadsheet' || ext === '.ods') {
+		return await extractOdsText(file);
+	}
+
+	// OpenDocument text/presentation check
+	if (
+		type === 'application/vnd.oasis.opendocument.text' ||
+		type === 'application/vnd.oasis.opendocument.presentation' ||
+		['.odt', '.odp'].includes(ext)
+	) {
+		return await extractOdfText(file);
+	}
+
+	// Text check (plain or common text-based)
+	if (type.startsWith('text/') || textExtensions.includes(ext)) {
+		return await readAsText(file);
+	}
+
+	// Fallback: try to read as text, if decodable
+	try {
+		return await readAsText(file);
+	} catch (err) {
+		throw new Error('Unsupported or non-text file type: ' + (file.name || type));
+	}
+};
+
+export const getAge = (birthDate) => {
+	const today = new Date();
+	const bDate = new Date(birthDate);
+	let age = today.getFullYear() - bDate.getFullYear();
+	const m = today.getMonth() - bDate.getMonth();
+
+	if (m < 0 || (m === 0 && today.getDate() < bDate.getDate())) {
+		age--;
+	}
+	return age.toString();
+};
+
+export const normalizeImageFile = async (file: File): Promise<File> => {
+	if (file.type && file.type !== 'application/octet-stream') return file;
+
+	// Some drag sources (e.g. macOS Photos) omit both the MIME type and extension.
+	try {
+		const header = String.fromCharCode(...new Uint8Array(await file.slice(0, 12).arrayBuffer()));
+		let type = '';
+		if (header.startsWith('\xff\xd8\xff')) type = 'image/jpeg';
+		else if (header.startsWith('\x89PNG\r\n\x1a\n')) type = 'image/png';
+		else if (header.startsWith('GIF87a') || header.startsWith('GIF89a')) type = 'image/gif';
+		else if (header.startsWith('RIFF') && header.slice(8, 12) === 'WEBP') type = 'image/webp';
+		else if (header.slice(4, 8) === 'ftyp') {
+			const brand = header.slice(8, 12);
+			if (['avif', 'avis'].includes(brand)) type = 'image/avif';
+			else if (['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis'].includes(brand))
+				type = 'image/heic';
+		}
+		return type ? new File([file], file.name, { type, lastModified: file.lastModified }) : file;
+	} catch {
+		return file;
+	}
+};
+
+const HEIC_EXTENSION_PATTERN = /\.(heic|heif)$/i;
+
+// Browsers label HEIC photos inconsistently (Firefox uses image/heif, some leave it empty).
+export const isHeicImage = (file: File) =>
+	['image/heic', 'image/heif'].includes(file.type) || HEIC_EXTENSION_PATTERN.test(file.name);
+
+export const convertHeicToJpeg = async (file: File) => {
+	const { default: heic2any } = await import('heic2any');
+	try {
+		const jpegBlob = (await heic2any({ blob: file, toType: 'image/jpeg' })) as Blob;
+		const jpegName = `${file.name.replace(HEIC_EXTENSION_PATTERN, '')}.jpg`;
+		return new File([jpegBlob], jpegName, { type: 'image/jpeg' });
+	} catch (err: any) {
+		if (err?.message?.includes('already browser readable')) {
+			return file;
+		}
+		throw err;
+	}
+};
+
+export const decodeString = (str: string) => {
+	try {
+		return decodeURIComponent(str);
+	} catch (e) {
+		return str;
+	}
+};
+
+export const initMermaid = async () => {
+	const { default: mermaid } = await import('mermaid');
+	mermaid.initialize({
+		startOnLoad: false, // Should be false when using render API
+		theme: document.documentElement.classList.contains('dark') ? 'dark' : 'default',
+		securityLevel: 'loose',
+		htmlLabels: false,
+		secure: ['htmlLabels']
+	});
+	return mermaid;
+};
+
+const cleanupMermaidTempElements = (id: string) => {
+	if (typeof document === 'undefined') {
+		return;
+	}
+
+	document.getElementById(id)?.remove();
+	document.getElementById(`d${id}`)?.remove();
+	document.getElementById(`i${id}`)?.remove();
+};
+
+const isLocalResourceUrl = (url: string): boolean => {
+	try {
+		const resolved = new URL(url, document.baseURI);
+		return resolved.protocol === 'data:' || resolved.origin === location.origin;
+	} catch {
+		return false;
+	}
+};
+
+// Escapes and image-set() read as a plain url() to a browser, so match the parsed CSS, not the text.
+const CSS_URL_SYNTAX = /url\(|image-set\(|@import|\\/i;
+
+const cssRules = (css: string): string[] => {
+	const parsed = new DOMParser().parseFromString(`<style>${css}</style>`, 'text/html');
+	return [...(parsed.querySelector('style')?.sheet?.cssRules ?? [])].map((rule) => rule.cssText);
+};
+
+const referencesExternalCss = (css: string): boolean => {
+	if (!CSS_URL_SYNTAX.test(css)) {
+		return false;
+	}
+
+	// A value arrives as a stylesheet, a declaration list or a bare presentation value.
+	return [css, `a{${css}}`, `a{background-image:${css}}`].some((stylesheet) => {
+		const urls = cssRules(stylesheet)
+			.join('')
+			.matchAll(/url\(["']?([^"')]*)/g);
+		return [...urls].some(([, url]) => !isLocalResourceUrl(url));
+	});
+};
+
+const dropExternalResourceRefs = (node: Node, data: UponSanitizeAttributeHookEvent) => {
+	const tagName = node.nodeName.toLowerCase();
+	const isImageRef =
+		(tagName === 'image' || tagName === 'feimage') &&
+		(data.attrName === 'href' || data.attrName === 'xlink:href');
+
+	if (isImageRef && !isLocalResourceUrl(data.attrValue)) {
+		data.keepAttr = false;
+	}
+	if (!isImageRef && referencesExternalCss(data.attrValue)) {
+		data.keepAttr = false;
+	}
+};
+
+// use hrefs point at defs inside the same document (#id) or fetch another file, keep only the former.
+const dropExternalUseRefs = (node: Node, data: UponSanitizeAttributeHookEvent) => {
+	if (node.nodeName.toLowerCase() !== 'use') {
+		return;
+	}
+	if (data.attrName !== 'href' && data.attrName !== 'xlink:href') {
+		return;
+	}
+	if (!data.attrValue.trim().startsWith('#')) {
+		data.keepAttr = false;
+	}
+};
+
+const dropExternalStyleRules = (node: Node) => {
+	if (node.nodeName.toLowerCase() !== 'style') {
+		return;
+	}
+
+	const css = node.textContent ?? '';
+	if (!referencesExternalCss(css)) {
+		return;
+	}
+
+	node.textContent = cssRules(css)
+		.filter((rule) => !referencesExternalCss(rule))
+		.join('');
+};
+
+// Mermaid runs with securityLevel:'loose', which emits unsanitized SVG (raw javascript: hrefs,
+// HTML labels); strip active content before it reaches any innerHTML/{@html} sink.
+export const sanitizeSvg = (svg: string): string => {
+	DOMPurify.addHook('uponSanitizeAttribute', dropExternalResourceRefs);
+	DOMPurify.addHook('uponSanitizeElement', dropExternalStyleRules);
+	DOMPurify.addHook('uponSanitizeAttribute', dropExternalUseRefs);
+	try {
+		return DOMPurify.sanitize(svg, {
+			USE_PROFILES: { svg: true, svgFilters: true },
+			WHOLE_DOCUMENT: false,
+			ADD_TAGS: ['style', 'foreignObject', 'use'],
+			ADD_ATTR: [
+				'class',
+				'style',
+				'id',
+				'data-*',
+				'viewBox',
+				'preserveAspectRatio',
+				'markerWidth',
+				'markerHeight',
+				'markerUnits',
+				'refX',
+				'refY',
+				'orient',
+				'href',
+				'xlink:href',
+				'dominant-baseline',
+				'text-anchor',
+				'clipPathUnits',
+				'filterUnits',
+				'patternUnits',
+				'patternContentUnits',
+				'maskUnits',
+				'role',
+				'aria-label',
+				'aria-labelledby',
+				'aria-hidden',
+				'tabindex'
+			],
+			SANITIZE_DOM: true
+		});
+	} finally {
+		DOMPurify.removeHook('uponSanitizeAttribute', dropExternalResourceRefs);
+		DOMPurify.removeHook('uponSanitizeElement', dropExternalStyleRules);
+		DOMPurify.removeHook('uponSanitizeAttribute', dropExternalUseRefs);
+	}
+};
+
+const configStrings = (value: any): string[] => {
+	if (typeof value === 'string') {
+		return [value];
+	}
+	return value && typeof value === 'object' ? Object.values(value).flatMap(configStrings) : [];
+};
+
+export const renderMermaidDiagram = async (
+	mermaid: typeof import('mermaid').default,
+	code: string,
+	renderId?: string
+) => {
+	const id = renderId ?? `mermaid-${uuidv4()}`;
+	try {
+		// Mermaid renders into a live document, so its own fetches have to be ruled out beforehand.
+		const { config } = (await mermaid.parse(code, { suppressErrors: false })) as any;
+		const diagram: any = await mermaid.mermaidAPI.getDiagramFromText(code);
+		const imageUrls = [
+			...[...(diagram.db.getVertices?.() ?? []).values()].map((vertex: any) => vertex.img),
+			...[...(diagram.db.getActors?.() ?? []).values()].map((actor: any) => actor.properties?.icon)
+		];
+		const classStyles = [...(diagram.db.getClasses?.() ?? []).values()].flatMap((classDef: any) => [
+			...(classDef.styles ?? []),
+			...(classDef.textStyles ?? [])
+		]);
+
+		if (
+			imageUrls.some((url) => url && !isLocalResourceUrl(url)) ||
+			classStyles.some(referencesExternalCss) ||
+			configStrings(config).some(referencesExternalCss)
+		) {
+			throw new Error('External resource loading is disabled for rendered diagrams');
+		}
+
+		const { svg } = await mermaid.render(id, code);
+		return sanitizeSvg(svg);
+	} finally {
+		// Mermaid can leave temporary d*/i* wrappers on error paths.
+		cleanupMermaidTempElements(id);
+	}
+};
+
+export const renderVegaVisualization = async (spec: string, lang: string = '', i18n?: any) => {
+	const vega = await import('vega');
+	const parsedSpec = JSON.parse(spec);
+	const hasVegaLiteKeys =
+		'mark' in parsedSpec ||
+		'encoding' in parsedSpec ||
+		'layer' in parsedSpec ||
+		'hconcat' in parsedSpec ||
+		'vconcat' in parsedSpec ||
+		'repeat' in parsedSpec ||
+		'facet' in parsedSpec;
+	const isVegaLite =
+		lang === 'vega-lite' ||
+		(parsedSpec.$schema && parsedSpec.$schema.includes('vega-lite')) ||
+		hasVegaLiteKeys;
+	let vegaSpec = parsedSpec;
+	if (isVegaLite) {
+		const vegaLite = await import('vega-lite');
+		vegaSpec = vegaLite.compile(parsedSpec).spec;
+	}
+	// Specs come from untrusted chat content: block external loads via data.url (loader.load)
+	// and image mark hrefs emitted into the SVG (loader.sanitize).
+	const loader = vega.loader();
+	loader.load = async () => {
+		throw new Error('External resource loading is disabled for rendered visualizations');
+	};
+	const sanitize = loader.sanitize.bind(loader);
+	loader.sanitize = async (uri: string, options: any) => {
+		// Resolve with the browser's URL parser so encoding tricks match what it would fetch
+		const resolved = new URL(uri, document.baseURI);
+		if (resolved.protocol !== 'data:' && resolved.origin !== location.origin) {
+			throw new Error('External resource loading is disabled for rendered visualizations');
+		}
+		return sanitize(uri, options);
+	};
+	const view = new vega.View(vega.parse(vegaSpec), { loader, renderer: 'none' });
+	const svg = await view.toSVG();
+	return svg;
+};
+
+export const getCodeBlockContents = (content: string): object => {
+	// Strip thinking/reasoning and other detail blocks before extracting code
+	// to prevent code inside <details type="reasoning"> from being treated as artifacts
+	content = removeAllDetails(content);
+
+	const codeBlockContents = content.match(/```[\s\S]*?```/g);
+
+	let codeBlocks = [];
+
+	// Each HTML block starts an artifact; subsequent CSS and JS join the most recent group.
+	let htmlGroups: Array<{ html: string; css: string; js: string }> = [];
+
+	const initDefaultGroup = () => {
+		if (htmlGroups.length === 0) {
+			htmlGroups.push({ html: '', css: '', js: '' });
+		}
+	};
+
+	if (codeBlockContents) {
+		codeBlockContents.forEach((block) => {
+			const lang = block.split('\n')[0].replace('```', '').trim().toLowerCase();
+			const code = block.replace(/```[\s\S]*?\n/, '').replace(/```$/, '');
+			codeBlocks.push({ lang, code });
+		});
+
+		codeBlocks.forEach((block) => {
+			const { lang, code } = block;
+
+			if (lang === 'html') {
+				// Each HTML block starts a new group
+				htmlGroups.push({ html: code + '\n', css: '', js: '' });
+			} else if (lang === 'css') {
+				initDefaultGroup();
+				htmlGroups[htmlGroups.length - 1].css += code + '\n';
+			} else if (lang === 'javascript' || lang === 'js') {
+				initDefaultGroup();
+				htmlGroups[htmlGroups.length - 1].js += code + '\n';
+			}
+		});
+	} else {
+		// Remove details tags from the content to check if there are any code blocks
+		// hidden in the details tags (e.g. reasoning, etc.)
+		content = removeAllDetails(content);
+
+		const inlineHtml = content.match(/<html>[\s\S]*?<\/html>/gi);
+		const inlineCss = content.match(/<style>[\s\S]*?<\/style>/gi);
+		const inlineJs = content.match(/<script>[\s\S]*?<\/script>/gi);
+
+		if (inlineHtml) {
+			inlineHtml.forEach((block) => {
+				const content = block.replace(/<\/?html>/gi, ''); // Remove <html> tags
+				htmlGroups.push({ html: content + '\n', css: '', js: '' });
+			});
+		}
+		if (inlineCss) {
+			inlineCss.forEach((block) => {
+				const content = block.replace(/<\/?style>/gi, ''); // Remove <style> tags
+				initDefaultGroup();
+				htmlGroups[htmlGroups.length - 1].css += content + '\n';
+			});
+		}
+		if (inlineJs) {
+			inlineJs.forEach((block) => {
+				const content = block.replace(/<\/?script>/gi, ''); // Remove <script> tags
+				initDefaultGroup();
+				htmlGroups[htmlGroups.length - 1].js += content + '\n';
+			});
+		}
+	}
+
+	// Backward-compatible flat fields (merged from all groups)
+	const htmlContent = htmlGroups.map((g) => g.html).join('');
+	const cssContent = htmlGroups.map((g) => g.css).join('');
+	const jsContent = htmlGroups.map((g) => g.js).join('');
+
+	return {
+		codeBlocks: codeBlocks,
+		html: htmlContent.trim(),
+		css: cssContent.trim(),
+		js: jsContent.trim(),
+		htmlGroups: htmlGroups
+			.filter((g) => g.html.trim() || g.css.trim() || g.js.trim())
+			.map((g) => ({
+				html: g.html.trim(),
+				css: g.css.trim(),
+				js: g.js.trim()
+			}))
+	};
+};
+export const parseFrontmatter = (content: string): Record<string, unknown> => {
+	const match = content.match(/^\uFEFF?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/);
+	if (!match) return {};
+	try {
+		const fields = parseYaml(match[1]);
+		return fields && typeof fields === 'object' && !Array.isArray(fields) ? fields : {};
+	} catch {
+		// Incomplete frontmatter is normal while typing.
+		return {};
+	}
+};
+
+export const formatSkillName = (name) => {
+	return name.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+};
+
+/**
+ * Open the file browser panel to display a specific file.
+ * Used by both the direct tool execution path (client-side) and the
+ * backend event path (server-side) so behaviour is consistent.
+ *
+ * Stores are passed in by the caller to keep this utility pure.
+ */
+export const displayFileHandler = (
+	path: string,
+	stores: {
+		showTabs: Pick<Writable<boolean>, 'set'>;
+		showFileNavPath: Writable<FileNavOpenRequest | null>;
+	},
+	options: { page?: unknown } = {}
+) => {
+	if (path) {
+		stores.showTabs.set(true);
+		const page = normalizeDocumentTargetPage(options.page);
+		stores.showFileNavPath.set(page ? { path, page } : path);
+	}
+};
+
+export function groupReplies(items: ResourceComment[], parentId: string) {
+	const children = new Map<string, ResourceComment[]>();
+	for (const comment of [...items].sort(
+		(a, b) => a.created_at - b.created_at || a.id.localeCompare(b.id)
+	)) {
+		const target = comment.reply_to_id ?? parentId;
+		const siblings = children.get(target) ?? [];
+		siblings.push(comment);
+		children.set(target, siblings);
+	}
+	return children;
+}
+
+export function scrollToComment(id: string) {
+	const element = document.getElementById(`comment-${id}`);
+	element?.scrollIntoView({ block: 'center' });
+	element?.animate([{ backgroundColor: '#a5a5c544' }, { backgroundColor: 'transparent' }], {
+		duration: 2200
+	});
+}
+
+export function commentLink(
+	comment: Pick<
+		ResourceComment,
+		'id' | 'resource_type' | 'resource_id' | 'target_type' | 'target_id'
+	>
+) {
+	const query = new URLSearchParams({ comment: comment.id });
+	let path = '/';
+	if (comment.resource_type === 'chat') path = `/c/${encodeURIComponent(comment.resource_id)}`;
+	if (comment.resource_type === 'note') path = `/notes/${encodeURIComponent(comment.resource_id)}`;
+	if (['model', 'skill', 'tool'].includes(comment.resource_type)) {
+		path = `/workspace/${comment.resource_type}s/edit`;
+		query.set('id', comment.resource_id);
+	}
+	if (comment.resource_type === 'prompt')
+		path = `/workspace/prompts/${encodeURIComponent(comment.resource_id)}`;
+	if (comment.resource_type === 'knowledge')
+		path = `/workspace/knowledge/${encodeURIComponent(comment.resource_id)}`;
+	if (comment.target_type === 'chat_message' && comment.target_id)
+		query.set('message', comment.target_id);
+	if (comment.target_type === 'note_page' && comment.target_id)
+		query.set('page', comment.target_id);
+	return `${path}?${query}`;
+}

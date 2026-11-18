@@ -1,69 +1,105 @@
 <script lang="ts">
-	import { DropdownMenu } from 'bits-ui';
-	import { flyAndScale } from '$lib/utils/transitions';
+	import type { CommentsRequest } from '$lib/components/comments/CommentsPanel.svelte';
+	export let onComment: (request: CommentsRequest) => void;
+	import CommentButton from '$lib/components/comments/CommentButton.svelte';
+	export let resourceId = '';
+	import LockClosed from '$lib/components/icons/LockClosed.svelte';
 	import { getContext, createEventDispatcher } from 'svelte';
 	const dispatch = createEventDispatcher();
 
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
+	import DropdownMenu from '$lib/components/common/DropdownMenu.svelte';
 	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
-	import Pencil from '$lib/components/icons/Pencil.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import Tags from '$lib/components/chat/Tags.svelte';
-	import Share from '$lib/components/icons/Share.svelte';
-	import ArchiveBox from '$lib/components/icons/ArchiveBox.svelte';
-	import DocumentDuplicate from '$lib/components/icons/DocumentDuplicate.svelte';
-	import ArrowDownTray from '$lib/components/icons/ArrowDownTray.svelte';
-	import ArrowUpCircle from '$lib/components/icons/ArrowUpCircle.svelte';
+	import Download from '$lib/components/icons/Download.svelte';
 	import EllipsisHorizontal from '$lib/components/icons/EllipsisHorizontal.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext<typeof import('$lib/i18n').default>('i18n');
 
+	export let onExport: null | Function = null;
+	export let accessHandler: (() => void) | null = null;
 	export let onClose: Function = () => {};
 
 	let show = false;
+
+	const closeMenu = () => {
+		show = false;
+		onClose();
+	};
 </script>
 
 <Dropdown
 	bind:show
-	on:change={(e) => {
-		if (e.detail === false) {
+	align="end"
+	onOpenChange={(state) => {
+		if (state === false) {
 			onClose();
 		}
 	}}
-	align="end"
 >
 	<Tooltip content={$i18n.t('More')}>
 		<slot
 			><button
-				class="self-center w-fit text-sm p-1.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
+				class="flex size-6 items-center justify-center rounded-lg text-gray-400 transition dark:text-gray-500"
 				type="button"
+				aria-label={$i18n.t('More Options')}
 				on:click={(e) => {
+					e.preventDefault();
 					e.stopPropagation();
-					show = true;
+					show = !show;
 				}}
 			>
-				<EllipsisHorizontal className="size-5" />
+				<EllipsisHorizontal className="size-4" />
 			</button>
 		</slot>
 	</Tooltip>
 
 	<div slot="content">
-		<DropdownMenu.Content
-			class="w-full max-w-[160px] rounded-xl px-1 py-1.5 border border-gray-300/30 dark:border-gray-700/50 z-50 bg-white dark:bg-gray-850 dark:text-white shadow"
-			sideOffset={-2}
-			side="bottom"
-			align="end"
-			transition={flyAndScale}
-		>
-			<DropdownMenu.Item
-				class="flex  gap-2  items-center px-3 py-2 text-sm  font-medium cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-md"
+		<DropdownMenu className="min-w-[10.625rem]">
+			<CommentButton
+				{onComment}
+				modal
+				menu
+				resource={{ resource_type: 'knowledge', resource_id: resourceId }}
+				onOpen={() => (show = false)}
+			/>
+			{#if accessHandler}
+				<button
+					type="button"
+					class="select-none flex h-[1.6875rem] w-full cursor-pointer items-center gap-2 rounded-xl bg-transparent px-2 text-[0.8125rem] hover:text-gray-900 dark:hover:text-gray-100"
+					on:click={() => {
+						accessHandler?.();
+						closeMenu();
+					}}
+				>
+					<LockClosed className="size-3.5" />
+					<div class="flex items-center">{$i18n.t('Access')}</div>
+				</button>
+			{/if}
+
+			{#if onExport}
+				<button
+					class="select-none flex h-[1.6875rem] w-full cursor-pointer items-center gap-2 rounded-xl bg-transparent px-2 text-[0.8125rem] hover:text-gray-900 dark:hover:text-gray-100"
+					on:click={() => {
+						onExport();
+						closeMenu();
+					}}
+				>
+					<Download className="size-3.5" />
+					<div class="flex items-center">{$i18n.t('Export')}</div>
+				</button>
+			{/if}
+
+			<button
+				class="select-none flex h-[1.6875rem] w-full cursor-pointer items-center gap-2 rounded-xl bg-transparent px-2 text-[0.8125rem] hover:text-gray-900 dark:hover:text-gray-100"
 				on:click={() => {
 					dispatch('delete');
+					closeMenu();
 				}}
 			>
-				<GarbageBin strokeWidth="2" />
+				<GarbageBin className="size-3.5" />
 				<div class="flex items-center">{$i18n.t('Delete')}</div>
-			</DropdownMenu.Item>
-		</DropdownMenu.Content>
+			</button>
+		</DropdownMenu>
 	</div>
 </Dropdown>

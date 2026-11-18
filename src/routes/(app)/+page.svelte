@@ -1,7 +1,8 @@
 <script lang="ts">
-	import Chat from '$lib/components/chat/Chat.svelte';
-	import Help from '$lib/components/layout/Help.svelte';
-</script>
+	import { toast } from 'svelte-sonner';
 
-<Help />
-<Chat />
+	import { page } from '$app/stores';
+
+	$: error = $page.url.searchParams.get('error');
+	$: if (error) toast.error(error);
+</script>

@@ -4,27 +4,63 @@
 	import { createEventDispatcher } from 'svelte';
 	import { onMount, getContext } from 'svelte';
 
-	import { updateUserById } from '$lib/apis/users';
+	import { goto } from '$app/navigation';
+
+	import {
+		updateUserById,
+		getUserGroupsById,
+		revokeUserSessions,
+		rotateUserAPIKeyById,
+		deleteUserAPIKeyById
+	} from '$lib/apis/users';
+	import { copyToClipboard } from '$lib/utils';
 
 	import Modal from '$lib/components/common/Modal.svelte';
+	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
+	let showRevokeConfirmation = false;
+	let showDeleteAPIKeyConfirmation = false;
+	let showRotateAPIKeyConfirmation = false;
+	let rotatedAPIKey = '';
+	import localizedFormat from 'dayjs/plugin/localizedFormat';
+	import XMark from '$lib/components/icons/XMark.svelte';
+	import SensitiveInput from '$lib/components/common/SensitiveInput.svelte';
+	import UserProfileImage from '$lib/components/chat/Settings/Account/UserProfileImage.svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext<typeof import('$lib/i18n').default>('i18n');
 	const dispatch = createEventDispatcher();
+	dayjs.extend(localizedFormat);
 
 	export let show = false;
 	export let selectedUser;
 	export let sessionUser;
 
+	$: if (show && selectedUser) {
+		init();
+	} else {
+		rotatedAPIKey = '';
+	}
+
+	const init = () => {
+		rotatedAPIKey = '';
+		if (selectedUser) {
+			_user = { ...selectedUser, password: '' };
+			loadUserGroups();
+		}
+	};
+
 	let _user = {
 		profile_image_url: '',
+		role: 'pending',
 		name: '',
 		email: '',
 		password: ''
 	};
 
+	let userGroups: any[] | null = null;
+
 	const submitHandler = async () => {
 		const res = await updateUserById(localStorage.token, selectedUser.id, _user).catch((error) => {
-			toast.error(error);
+			toast.error(`${error}`);
 		});
 
 		if (res) {
@@ -33,39 +69,83 @@
 		}
 	};
 
-	onMount(() => {
-		if (selectedUser) {
-			_user = selectedUser;
-			_user.password = '';
-		}
-	});
+	const loadUserGroups = async () => {
+		if (!selectedUser?.id) return;
+		userGroups = null;
+
+		userGroups = await getUserGroupsById(localStorage.token, selectedUser.id).catch((error) => {
+			toast.error(`${error}`);
+			return null;
+		});
+	};
 </script>
 
-<Modal size="sm" bind:show>
+<ConfirmDialog
+	bind:show={showRotateAPIKeyConfirmation}
+	title={$i18n.t('Rotate API Key?')}
+	message={$i18n.t(
+		'This will replace the current API key. Integrations using the old key will stop working.'
+	)}
+	confirmLabel={$i18n.t('Rotate')}
+	on:confirm={async () => {
+		const target = _user;
+		try {
+			const key = await rotateUserAPIKeyById(localStorage.token, selectedUser.id);
+			if (show && target === _user) rotatedAPIKey = key;
+			toast.success($i18n.t('API Key created.'));
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : String(error));
+		}
+	}}
+/>
+
+<ConfirmDialog
+	bind:show={showDeleteAPIKeyConfirmation}
+	title={$i18n.t('Delete API Key?')}
+	message={$i18n.t('This will revoke the current API key.')}
+	confirmLabel={$i18n.t('Delete')}
+	on:confirm={async () => {
+		const target = _user;
+		try {
+			await deleteUserAPIKeyById(localStorage.token, selectedUser.id);
+			if (target === _user) rotatedAPIKey = '';
+			toast.success($i18n.t('API Key deleted.'));
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : String(error));
+		}
+	}}
+/>
+
+<ConfirmDialog
+	bind:show={showRevokeConfirmation}
+	title={$i18n.t('Sign out all devices?')}
+	message={$i18n.t('This user will need to sign in again on every device. API keys remain active.')}
+	on:confirm={async () => {
+		try {
+			await revokeUserSessions(localStorage.token, selectedUser.id);
+			toast.success($i18n.t('All sessions revoked'));
+		} catch (error) {
+			toast.error(error instanceof Error ? error.message : String(error));
+		}
+	}}
+/>
+
+<Modal ariaLabel={$i18n.t('Edit User')} size="sm" bind:show>
 	<div>
-		<div class=" flex justify-between dark:text-gray-300 px-5 py-4">
-			<div class=" text-lg font-medium self-center">{$i18n.t('Edit User')}</div>
+		<div class=" flex justify-between dark:text-gray-300 px-4 pt-3 pb-1">
+			<div class=" text-sm font-medium self-center">{$i18n.t('Edit User')}</div>
 			<button
-				class="self-center"
+				class="self-center rounded-lg py-1 text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 px-0"
+				aria-label={$i18n.t('Close')}
 				on:click={() => {
 					show = false;
 				}}
 			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 20 20"
-					fill="currentColor"
-					class="w-5 h-5"
-				>
-					<path
-						d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
-					/>
-				</svg>
+				<XMark className={'size-4'} />
 			</button>
 		</div>
-		<hr class=" dark:border-gray-800" />
 
-		<div class="flex flex-col md:flex-row w-full p-5 md:space-x-4 dark:text-gray-200">
+		<div class="flex flex-col md:flex-row w-full md:space-x-4 dark:text-gray-200">
 			<div class=" flex flex-col w-full sm:flex-row sm:justify-center sm:space-x-6">
 				<form
 					class="flex flex-col w-full"
@@ -73,78 +153,198 @@
 						submitHandler();
 					}}
 				>
-					<div class=" flex items-center rounded-md py-2 px-4 w-full">
-						<div class=" self-center mr-5">
-							<img
-								src={selectedUser.profile_image_url}
-								class=" max-w-[55px] object-cover rounded-full"
-								alt="User profile"
-							/>
-						</div>
-
-						<div>
-							<div class=" self-center capitalize font-semibold">{selectedUser.name}</div>
-
-							<div class="text-xs text-gray-500">
-								{$i18n.t('Created at')}
-								{dayjs(selectedUser.created_at * 1000).format($i18n.t('MMMM DD, YYYY'))}
-							</div>
-						</div>
-					</div>
-
-					<hr class=" dark:border-gray-800 my-3 w-full" />
-
-					<div class=" flex flex-col space-y-1.5">
-						<div class="flex flex-col w-full">
-							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Email')}</div>
-
-							<div class="flex-1">
-								<input
-									class="w-full rounded py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-800 disabled:text-gray-500 dark:disabled:text-gray-500 outline-none"
-									type="email"
-									bind:value={_user.email}
-									autocomplete="off"
-									required
-									disabled={_user.id == sessionUser.id}
+					<div class=" px-5 pt-3 pb-5 w-full">
+						<div class="flex self-center w-full">
+							<div class=" self-start h-full mr-6">
+								<UserProfileImage
+									imageClassName="size-14"
+									bind:profileImageUrl={_user.profile_image_url}
+									user={_user}
 								/>
 							</div>
-						</div>
 
-						<div class="flex flex-col w-full">
-							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Name')}</div>
+							<div class=" flex-1 min-w-0">
+								<div class="overflow-hidden w-ful mb-2">
+									<div class=" self-center capitalize font-normal truncate">
+										{selectedUser.name}
+									</div>
 
-							<div class="flex-1">
-								<input
-									class="w-full rounded py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-800 outline-none"
-									type="text"
-									bind:value={_user.name}
-									autocomplete="off"
-									required
-								/>
+									<div class="text-xs text-gray-500">
+										{$i18n.t('Created at')}
+										{dayjs(selectedUser.created_at * 1000)
+											.locale($i18n.language)
+											.format('LL')}
+									</div>
+								</div>
+
+								<div class=" flex flex-col space-y-1.5">
+									{#if (userGroups ?? []).length > 0}
+										<div class="flex flex-col w-full text-sm">
+											<div class="mb-1 text-xs text-gray-500">{$i18n.t('User Groups')}</div>
+
+											<div class="flex flex-wrap gap-1 my-0.5 -mx-1">
+												{#each userGroups as userGroup}
+													<span
+														class="px-1.5 py-0.5 rounded-xl bg-gray-100 dark:bg-gray-850 text-xs"
+													>
+														<a
+															href={'/admin/users/groups?id=' + userGroup.id}
+															on:click|preventDefault={() =>
+																goto('/admin/users/groups?id=' + userGroup.id)}
+														>
+															{userGroup.name}
+														</a>
+													</span>
+												{/each}
+											</div>
+										</div>
+									{/if}
+
+									<div class="flex flex-col w-full">
+										<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Role')}</div>
+
+										<div class="flex-1">
+											<select
+												class="w-full text-sm bg-transparent disabled:text-gray-500 dark:disabled:text-gray-500 outline-hidden"
+												bind:value={_user.role}
+												aria-label={$i18n.t('Role')}
+												disabled={_user.id == sessionUser.id}
+												required
+											>
+												<option value="admin">{$i18n.t('Admin')}</option>
+												<option value="user">{$i18n.t('User')}</option>
+												<option value="pending">{$i18n.t('Pending')}</option>
+											</select>
+										</div>
+									</div>
+
+									<div class="flex flex-col w-full">
+										<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Name')}</div>
+
+										<div class="flex-1">
+											<input
+												class="w-full text-sm bg-transparent outline-hidden"
+												type="text"
+												bind:value={_user.name}
+												aria-label={$i18n.t('Name')}
+												placeholder={$i18n.t('Enter Your Name')}
+												autocomplete="off"
+												required
+											/>
+										</div>
+									</div>
+
+									<div class="flex flex-col w-full">
+										<div class=" mb-1 text-xs text-gray-500">{$i18n.t('Email')}</div>
+
+										<div class="flex-1">
+											<input
+												class="w-full text-sm bg-transparent disabled:text-gray-500 dark:disabled:text-gray-500 outline-hidden"
+												type="text"
+												inputmode="email"
+												bind:value={_user.email}
+												aria-label={$i18n.t('Email')}
+												placeholder={$i18n.t('Enter Your Email')}
+												autocomplete="off"
+												required
+											/>
+										</div>
+									</div>
+
+									{#if _user?.oauth}
+										<div class="flex flex-col w-full">
+											<div class=" mb-1 text-xs text-gray-500">{$i18n.t('OAuth ID')}</div>
+
+											<div class="flex-1 text-sm break-all mb-1 flex flex-col space-y-1">
+												{#each Object.keys(_user.oauth) as key}
+													<div>
+														<span class="text-gray-500">{key}</span>
+														<span class="">{_user.oauth[key]?.sub}</span>
+													</div>
+												{/each}
+											</div>
+										</div>
+									{/if}
+
+									<div class="flex flex-col w-full">
+										<div class=" mb-1 text-xs text-gray-500">{$i18n.t('New Password')}</div>
+
+										<div class="flex-1">
+											<SensitiveInput
+												class="w-full text-sm bg-transparent outline-hidden"
+												type="password"
+												aria-label={$i18n.t('New Password')}
+												placeholder={$i18n.t('Enter New Password')}
+												bind:value={_user.password}
+												autocomplete="new-password"
+												required={false}
+											/>
+										</div>
+									</div>
+									<div class="flex items-center justify-between w-full">
+										<div class="text-xs text-gray-500">{$i18n.t('API Key')}</div>
+										<div class="flex items-center gap-3">
+											<button
+												type="button"
+												class="text-xs text-gray-500 transition-colors hover:text-gray-700 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-200"
+												on:click={() => {
+													showRotateAPIKeyConfirmation = true;
+												}}>{$i18n.t('Rotate')}</button
+											>
+											<button
+												type="button"
+												class="text-xs text-gray-500 transition-colors hover:text-gray-700 disabled:opacity-50 dark:text-gray-400 dark:hover:text-gray-200"
+												on:click={() => {
+													showDeleteAPIKeyConfirmation = true;
+												}}>{$i18n.t('Delete')}</button
+											>
+										</div>
+									</div>
+									{#if rotatedAPIKey}
+										<div class="space-y-1.5">
+											<div class="flex items-center gap-2">
+												<SensitiveInput
+													variant="settings"
+													placeholder={$i18n.t('API Key')}
+													value={rotatedAPIKey}
+													readOnly={true}
+												/>
+												<button
+													type="button"
+													class="shrink-0 text-xs text-gray-500 hover:text-gray-700 dark:hover:text-gray-200"
+													aria-label={$i18n.t('Copy API Key')}
+													on:click={async () => {
+														if (await copyToClipboard(rotatedAPIKey))
+															toast.success($i18n.t('Copied to clipboard'));
+													}}>{$i18n.t('Copy')}</button
+												>
+											</div>
+											<p class="text-xs text-gray-500">
+												{$i18n.t(
+													'Copy this key now. It will not be shown here again after you close this dialog.'
+												)}
+											</p>
+										</div>
+									{/if}
+								</div>
 							</div>
 						</div>
 
-						<div class="flex flex-col w-full">
-							<div class=" mb-1 text-xs text-gray-500">{$i18n.t('New Password')}</div>
-
-							<div class="flex-1">
-								<input
-									class="w-full rounded py-2 px-4 text-sm dark:text-gray-300 dark:bg-gray-800 outline-none"
-									type="password"
-									bind:value={_user.password}
-									autocomplete="new-password"
-								/>
-							</div>
+						<div class="flex justify-between pt-3 text-sm font-normal">
+							<button
+								type="button"
+								class="text-sm text-gray-500 transition-colors hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+								on:click={() => {
+									showRevokeConfirmation = true;
+								}}>{$i18n.t('Sign out all devices')}</button
+							>
+							<button
+								class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white"
+								type="submit"
+							>
+								{$i18n.t('Save')}
+							</button>
 						</div>
-					</div>
-
-					<div class="flex justify-end pt-3 text-sm font-medium">
-						<button
-							class=" px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-gray-100 transition rounded-lg"
-							type="submit"
-						>
-							{$i18n.t('Save')}
-						</button>
 					</div>
 				</form>
 			</div>

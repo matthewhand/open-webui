@@ -1,6 +1,6 @@
 <script>
 	import { onMount } from 'svelte';
-	import { models } from '$lib/stores';
+	import { baseModels, config, models, settings } from '$lib/stores';
 	import { getModels } from '$lib/apis';
 	import Models from '$lib/components/workspace/Models.svelte';
 
@@ -13,6 +13,6 @@
 	});
 </script>
 
-{#if $models !== null}
+{#if $baseModels !== null}
 	<Models />
 {/if}

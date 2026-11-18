@@ -1,23 +1,66 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
 	import { getContext, onMount } from 'svelte';
-	const i18n = getContext('i18n');
+	const i18n = getContext<import('svelte/store').Writable<import('i18next').i18n>>('i18n');
 
+	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
-	import Display from './Display.svelte';
+	import General from './General.svelte';
 	import Permissions from './Permissions.svelte';
 	import Users from './Users.svelte';
+	import InheritedMembers from './InheritedMembers.svelte';
+	import { getGroupPreview } from '$lib/apis/groups';
+	import GroupPreviewPanel from './GroupPreviewPanel.svelte';
+	import { DEFAULT_PERMISSIONS } from '$lib/constants/permissions';
+	import { getUserDefaultPermissions, getUserDefaultPermissionsDefaults } from '$lib/apis/users';
 	import UserPlusSolid from '$lib/components/icons/UserPlusSolid.svelte';
 	import WrenchSolid from '$lib/components/icons/WrenchSolid.svelte';
+	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
+	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import XMark from '$lib/components/icons/XMark.svelte';
+	import Select from '$lib/components/common/Select.svelte';
+	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
+	import Check from '$lib/components/icons/Check.svelte';
 
 	export let onSubmit: Function = () => {};
 	export let onDelete: Function = () => {};
+	export let onMemberChange: Function = () => {};
 
 	export let show = false;
 	export let edit = false;
 
-	export let users = [];
-	export let group = null;
+	export let group: any = null;
+	export let groups: import('../Groups.svelte').GroupListItem[] = [];
+	let parent_group_id: string | null = null;
+	let membershipTab = 'direct';
+	let inheritedPermissions: Record<string, any> = {};
+	let loadedParent: string | null | undefined = undefined;
+	let inheritanceRequest = 0;
+	async function loadInheritance(parentId: string | null) {
+		loadedParent = parentId;
+		const request = ++inheritanceRequest;
+		inheritedPermissions = defaultPermissions;
+		if (!parentId) return;
+		try {
+			const preview = await getGroupPreview(localStorage.token, parentId);
+			if (request === inheritanceRequest) inheritedPermissions = preview.effective_permissions;
+		} catch (e) {
+			if (request === inheritanceRequest && show) toast.error(String(e));
+		}
+	}
+	$: deleteMessage = group?.parent_group_id
+		? $i18n.t(
+				'Delete {{name}}? Its child groups will move to {{parent}}. Permissions and direct memberships belonging to this group will be removed.',
+				{
+					name: group?.name,
+					parent: groups.find((item) => item.id === group.parent_group_id)?.path
+				}
+			)
+		: $i18n.t(
+				'Delete {{name}}? Its child groups will become top-level groups. Permissions and direct memberships belonging to this group will be removed.',
+				{ name: group?.name }
+			);
+	export let defaultPermissions: Record<string, any> = {};
 
 	export let custom = true;
 
@@ -25,25 +68,16 @@
 
 	let selectedTab = 'general';
 	let loading = false;
+	let showDeleteConfirmDialog = false;
+	let showResetConfirmDialog = false;
+
+	let userCount = 0;
 
 	export let name = '';
 	export let description = '';
+	export let data: Record<string, any> = {};
 
-	export let permissions = {
-		workspace: {
-			models: false,
-			knowledge: false,
-			prompts: false,
-			tools: false
-		},
-		chat: {
-			file_upload: true,
-			delete: true,
-			edit: true,
-			temporary: true
-		}
-	};
-	export let userIds = [];
+	export let permissions = DEFAULT_PERMISSIONS;
 
 	const submitHandler = async () => {
 		loading = true;
@@ -51,53 +85,117 @@
 		const group = {
 			name,
 			description,
+			data,
 			permissions,
-			user_ids: userIds
+			...(custom ? { parent_group_id } : {})
 		};
 
-		await onSubmit(group);
+		try {
+			if (await onSubmit(group)) show = false;
+		} catch (error) {
+			toast.error(String(error));
+		} finally {
+			loading = false;
+		}
+	};
 
-		loading = false;
-		show = false;
+	const resetToDefaultsHandler = async () => {
+		try {
+			// For user groups: reset to current global default permissions
+			// For default permissions modal: reset to stock/env-var configuration
+			const defaults = custom
+				? await getUserDefaultPermissions(localStorage.token)
+				: await getUserDefaultPermissionsDefaults(localStorage.token);
+			if (defaults) {
+				permissions = {
+					workspace: { ...DEFAULT_PERMISSIONS.workspace, ...defaults.workspace },
+					sharing: { ...DEFAULT_PERMISSIONS.sharing, ...defaults.sharing },
+					access_grants: { ...DEFAULT_PERMISSIONS.access_grants, ...defaults.access_grants },
+					chat: { ...DEFAULT_PERMISSIONS.chat, ...defaults.chat },
+					features: { ...DEFAULT_PERMISSIONS.features, ...defaults.features },
+					settings: { ...DEFAULT_PERMISSIONS.settings, ...defaults.settings }
+				};
+				toast.success($i18n.t('Permissions reset to defaults'));
+			}
+		} catch (error) {
+			toast.error(`${error}`);
+		}
 	};
 
 	const init = () => {
 		if (group) {
 			name = group.name;
+			parent_group_id = group.parent_group_id ?? null;
 			description = group.description;
-			permissions = group?.permissions ?? {
-				workspace: {
-					models: false,
-					knowledge: false,
-					prompts: false,
-					tools: false
-				},
-				chat: {
-					file_upload: true,
-					delete: true,
-					edit: true,
-					temporary: true
-				}
+			const loadedPermissions: Record<string, any> = group?.permissions ?? {};
+			// Create fresh object from defaults, then overlay loaded values
+			permissions = {
+				workspace: { ...DEFAULT_PERMISSIONS.workspace, ...loadedPermissions.workspace },
+				sharing: { ...DEFAULT_PERMISSIONS.sharing, ...loadedPermissions.sharing },
+				access_grants: { ...DEFAULT_PERMISSIONS.access_grants, ...loadedPermissions.access_grants },
+				chat: { ...DEFAULT_PERMISSIONS.chat, ...loadedPermissions.chat },
+				features: { ...DEFAULT_PERMISSIONS.features, ...loadedPermissions.features },
+				settings: { ...DEFAULT_PERMISSIONS.settings, ...loadedPermissions.settings }
 			};
-			userIds = group?.user_ids ?? [];
+			data = structuredClone(group?.data ?? {});
+
+			userCount = group?.member_count ?? 0;
 		}
 	};
 
 	$: if (show) {
 		init();
 	}
+	$: if (!show) {
+		loadedParent = undefined;
+		inheritanceRequest++;
+		membershipTab = 'direct';
+	}
+
+	$: if (show && parent_group_id !== loadedParent) loadInheritance(parent_group_id);
 
 	onMount(() => {
-		console.log(tabs);
 		selectedTab = tabs[0];
 		init();
 	});
 </script>
 
-<Modal size="md" bind:show>
+<ConfirmDialog
+	bind:show={showDeleteConfirmDialog}
+	title={$i18n.t('Delete group')}
+	message={deleteMessage}
+	on:confirm={async () => {
+		try {
+			if (await onDelete()) show = false;
+		} catch (error) {
+			toast.error(String(error));
+		}
+	}}
+/>
+
+<ConfirmDialog
+	bind:show={showResetConfirmDialog}
+	title={$i18n.t('Reset to Defaults')}
+	message={$i18n.t(
+		'Are you sure you want to reset all permissions to their default values? You will still need to save to apply the changes.'
+	)}
+	on:confirm={() => {
+		resetToDefaultsHandler();
+	}}
+/>
+
+<Modal
+	ariaLabel={custom
+		? edit
+			? $i18n.t('Edit User Group')
+			: $i18n.t('Add User Group')
+		: $i18n.t('Edit Default Permissions')}
+	size="lg"
+	bind:show
+>
 	<div>
-		<div class=" flex justify-between dark:text-gray-100 px-5 pt-4 mb-1.5">
-			<div class=" text-lg font-medium self-center font-primary">
+		<div class=" flex justify-between dark:text-gray-100 px-4 pt-3 mb-1">
+			<div class=" text-sm font-medium self-center">
 				{#if custom}
 					{#if edit}
 						{$i18n.t('Edit User Group')}
@@ -109,21 +207,13 @@
 				{/if}
 			</div>
 			<button
-				class="self-center"
+				aria-label={$i18n.t('Close')}
+				class="self-center rounded-lg py-1 text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 px-0"
 				on:click={() => {
 					show = false;
 				}}
 			>
-				<svg
-					xmlns="http://www.w3.org/2000/svg"
-					viewBox="0 0 20 20"
-					fill="currentColor"
-					class="w-5 h-5"
-				>
-					<path
-						d="M6.28 5.22a.75.75 0 00-1.06 1.06L8.94 10l-3.72 3.72a.75.75 0 101.06 1.06L10 11.06l3.72 3.72a.75.75 0 101.06-1.06L11.06 10l3.72-3.72a.75.75 0 00-1.06-1.06L10 8.94 6.28 5.22z"
-					/>
-				</svg>
+				<XMark className={'size-4'} />
 			</button>
 		</div>
 
@@ -139,11 +229,11 @@
 					<div class="flex flex-col lg:flex-row w-full h-full pb-2 lg:space-x-4">
 						<div
 							id="admin-settings-tabs-container"
-							class="tabs flex flex-row overflow-x-auto gap-2.5 max-w-full lg:gap-1 lg:flex-col lg:flex-none lg:w-40 dark:text-gray-200 text-sm font-medium text-left scrollbar-none"
+							class="tabs flex flex-row overflow-x-auto gap-2.5 max-w-full lg:gap-1 lg:flex-col lg:flex-none lg:w-40 dark:text-gray-200 text-sm font-normal text-left scrollbar-none"
 						>
 							{#if tabs.includes('general')}
 								<button
-									class="px-0.5 py-1 max-w-fit w-fit rounded-lg flex-1 lg:flex-none flex text-right transition {selectedTab ===
+									class="px-0.5 py-1 max-w-fit w-fit rounded-lg shrink-0 whitespace-nowrap flex text-right transition {selectedTab ===
 									'general'
 										? ''
 										: ' text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'}"
@@ -172,7 +262,7 @@
 
 							{#if tabs.includes('permissions')}
 								<button
-									class="px-0.5 py-1 max-w-fit w-fit rounded-lg flex-1 lg:flex-none flex text-right transition {selectedTab ===
+									class="px-0.5 py-1 max-w-fit w-fit rounded-lg shrink-0 whitespace-nowrap flex text-right transition {selectedTab ===
 									'permissions'
 										? ''
 										: ' text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'}"
@@ -190,7 +280,7 @@
 
 							{#if tabs.includes('users')}
 								<button
-									class="px-0.5 py-1 max-w-fit w-fit rounded-lg flex-1 lg:flex-none flex text-right transition {selectedTab ===
+									class="px-0.5 py-1 max-w-fit w-fit rounded-lg shrink-0 whitespace-nowrap flex text-right transition {selectedTab ===
 									'users'
 										? ''
 										: ' text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'}"
@@ -202,26 +292,149 @@
 									<div class=" self-center mr-2">
 										<UserPlusSolid />
 									</div>
-									<div class=" self-center">{$i18n.t('Users')} ({userIds.length})</div>
+									<div class=" self-center">{$i18n.t('Users')}</div>
+								</button>
+							{/if}
+
+							{#if tabs.includes('preview')}
+								<button
+									class="px-0.5 py-1 max-w-fit w-fit rounded-lg shrink-0 whitespace-nowrap flex text-right transition {selectedTab ===
+									'preview'
+										? ''
+										: ' text-gray-300 dark:text-gray-600 hover:text-gray-700 dark:hover:text-white'}"
+									on:click={() => {
+										selectedTab = 'preview';
+									}}
+									type="button"
+								>
+									<div class=" self-center mr-2">
+										<svg
+											xmlns="http://www.w3.org/2000/svg"
+											viewBox="0 0 16 16"
+											fill="currentColor"
+											class="w-4 h-4"
+										>
+											<path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3Z" />
+											<path
+												fill-rule="evenodd"
+												d="M1.38 8.28a.87.87 0 0 1 0-.566 7.003 7.003 0 0 1 13.238.006.87.87 0 0 1 0 .566A7.003 7.003 0 0 1 1.379 8.28ZM11 8a3 3 0 1 1-6 0 3 3 0 0 1 6 0Z"
+												clip-rule="evenodd"
+											/>
+										</svg>
+									</div>
+									<div class=" self-center">{$i18n.t('Preview')}</div>
 								</button>
 							{/if}
 						</div>
 
-						<div
-							class="flex-1 mt-1 lg:mt-1 lg:h-[22rem] lg:max-h-[22rem] overflow-y-auto scrollbar-hidden"
-						>
-							{#if selectedTab == 'general'}
-								<Display bind:name bind:description />
-							{:else if selectedTab == 'permissions'}
-								<Permissions bind:permissions />
-							{:else if selectedTab == 'users'}
-								<Users bind:userIds {users} />
+						<div class="flex-1 min-w-0 mt-1 lg:mt-1 lg:h-[30rem] lg:max-h-[30rem] flex flex-col">
+							<div class="w-full h-full overflow-y-auto scrollbar-hidden">
+								{#if selectedTab == 'general'}
+									<General
+										{groups}
+										groupId={group?.id}
+										bind:parent_group_id
+										bind:name
+										bind:description
+										bind:data
+										{edit}
+										onDelete={() => {
+											showDeleteConfirmDialog = true;
+										}}
+									/>
+								{:else if selectedTab == 'permissions'}
+									{#if custom && parent_group_id}
+										<p class="text-xs text-gray-500 mb-3">
+											{$i18n.t(
+												'Parent permissions are inherited. Disabling a local permission does not revoke inherited access.'
+											)}
+										</p>
+									{/if}
+									<Permissions
+										bind:permissions
+										defaultPermissions={custom ? inheritedPermissions : defaultPermissions}
+									/>
+								{:else if selectedTab == 'users'}
+									{#snippet membershipFilter()}
+										<div class="shrink-0">
+											<Select
+												bind:value={membershipTab}
+												items={[
+													{ value: 'direct', label: $i18n.t('Direct') },
+													{ value: 'inherited', label: $i18n.t('Inherited') }
+												]}
+												align="end"
+												triggerClass="flex items-center gap-1 rounded-lg px-1 py-0.5 text-xs font-normal text-gray-500 transition hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+											>
+												<svelte:fragment slot="trigger" let:selectedLabel>
+													<span>{selectedLabel}</span>
+													<ChevronDown className="size-2.5" strokeWidth="2.5" />
+												</svelte:fragment>
+												<svelte:fragment slot="item" let:item let:selected>
+													<span class="flex-1 text-left">{item.label}</span>
+													<Check className="size-3.5 {selected ? '' : 'invisible'}" />
+												</svelte:fragment>
+											</Select>
+										</div>
+									{/snippet}
+									{#if membershipTab === 'direct'}
+										<Users bind:userCount groupId={group?.id} {onMemberChange}>
+											<svelte:fragment slot="filter">{@render membershipFilter()}</svelte:fragment>
+										</Users>
+									{:else}
+										<InheritedMembers groupId={group?.id} {groups}>
+											<svelte:fragment slot="filter">{@render membershipFilter()}</svelte:fragment>
+										</InheritedMembers>
+									{/if}
+								{:else if selectedTab == 'preview'}
+									<GroupPreviewPanel groupId={group?.id} />
+								{/if}
+							</div>
+
+							{#if ['general', 'permissions'].includes(selectedTab)}
+								<div class="flex justify-between items-center pt-3 text-sm font-normal gap-1.5">
+									<div>
+										{#if selectedTab === 'permissions'}
+											<Tooltip
+												content={custom
+													? $i18n.t(
+															'Reset group permissions to match the current default user permissions'
+														)
+													: $i18n.t('Reset all permissions to their initial configuration values')}
+											>
+												<button
+													class="text-sm font-normal text-gray-500 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-300 transition hover:underline"
+													type="button"
+													on:click={() => {
+														showResetConfirmDialog = true;
+													}}
+												>
+													{$i18n.t('Reset to Defaults')}
+												</button>
+											</Tooltip>
+										{/if}
+									</div>
+
+									<button
+										class="flex h-7 shrink-0 items-center justify-center gap-1.5 rounded-lg bg-gray-900 px-2.5 text-xs font-normal text-white transition hover:bg-black disabled:opacity-60 dark:bg-gray-100 dark:text-gray-900 dark:hover:bg-white disabled:cursor-not-allowed"
+										type="submit"
+										disabled={loading || (custom && !name?.trim())}
+									>
+										{$i18n.t('Save')}
+
+										{#if loading}
+											<span class="shrink-0">
+												<Spinner className="size-3" />
+											</span>
+										{/if}
+									</button>
+								</div>
 							{/if}
 						</div>
 					</div>
 
 					<!-- <div
-						class=" tabs flex flex-row overflow-x-auto gap-2.5 text-sm font-medium border-b border-b-gray-800 scrollbar-hidden"
+						class=" tabs flex flex-row overflow-x-auto gap-2.5 text-sm font-normal border-b border-b-gray-800 scrollbar-hidden"
 					>
 						{#if tabs.includes('display')}
 							<button
@@ -268,59 +481,6 @@
 							</button>
 						{/if}
 					</div> -->
-
-					<div class="flex justify-end pt-3 text-sm font-medium gap-1.5">
-						{#if edit}
-							<button
-								class="px-3.5 py-1.5 text-sm font-medium dark:bg-black dark:hover:bg-gray-900 dark:text-white bg-white text-black hover:bg-gray-100 transition rounded-full flex flex-row space-x-1 items-center"
-								type="button"
-								on:click={() => {
-									onDelete();
-									show = false;
-								}}
-							>
-								{$i18n.t('Delete')}
-							</button>
-						{/if}
-
-						<button
-							class="px-3.5 py-1.5 text-sm font-medium bg-black hover:bg-gray-900 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition rounded-full flex flex-row space-x-1 items-center {loading
-								? ' cursor-not-allowed'
-								: ''}"
-							type="submit"
-							disabled={loading}
-						>
-							{$i18n.t('Save')}
-
-							{#if loading}
-								<div class="ml-2 self-center">
-									<svg
-										class=" w-4 h-4"
-										viewBox="0 0 24 24"
-										fill="currentColor"
-										xmlns="http://www.w3.org/2000/svg"
-										><style>
-											.spinner_ajPY {
-												transform-origin: center;
-												animation: spinner_AtaB 0.75s infinite linear;
-											}
-											@keyframes spinner_AtaB {
-												100% {
-													transform: rotate(360deg);
-												}
-											}
-										</style><path
-											d="M12,1A11,11,0,1,0,23,12,11,11,0,0,0,12,1Zm0,19a8,8,0,1,1,8-8A8,8,0,0,1,12,20Z"
-											opacity=".25"
-										/><path
-											d="M10.14,1.16a11,11,0,0,0-9,8.92A1.59,1.59,0,0,0,2.46,12,1.52,1.52,0,0,0,4.11,10.7a8,8,0,0,1,6.66-6.61A1.42,1.42,0,0,0,12,2.69h0A1.57,1.57,0,0,0,10.14,1.16Z"
-											class="spinner_ajPY"
-										/></svg
-									>
-								</div>
-							{/if}
-						</button>
-					</div>
 				</form>
 			</div>
 		</div>

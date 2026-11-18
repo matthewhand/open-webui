@@ -1,35 +1,23 @@
 <script lang="ts">
-	import { showSidebar } from '$lib/stores';
-	import AddFilesPlaceholder from '$lib/components/AddFilesPlaceholder.svelte';
+	import { getContext } from 'svelte';
+	import Icon from '../FileNav/Icon.svelte';
+
+	const i18n: any = getContext('i18n');
 
 	export let show = false;
-	let overlayElement = null;
-
-	$: if (show && overlayElement) {
-		document.body.appendChild(overlayElement);
-		document.body.style.overflow = 'hidden';
-	} else if (overlayElement) {
-		document.body.removeChild(overlayElement);
-		document.body.style.overflow = 'unset';
-	}
 </script>
 
 {#if show}
 	<div
-		bind:this={overlayElement}
-		class="fixed {$showSidebar
-			? 'left-0 md:left-[260px] md:w-[calc(100%-260px)]'
-			: 'left-0'}  fixed top-0 right-0 bottom-0 w-full h-full flex z-[9999] touch-none pointer-events-none"
-		id="dropzone"
-		role="region"
-		aria-label="Drag and Drop Container"
+		class="pointer-events-none absolute inset-0 z-50 bg-black/[0.02] dark:bg-white/[0.02]"
+		role="status"
+		aria-label={$i18n.t('Drag and Drop Container')}
 	>
-		<div class="absolute w-full h-full backdrop-blur bg-gray-800/40 flex justify-center">
-			<div class="m-auto pt-64 flex flex-col justify-center">
-				<div class="max-w-md">
-					<AddFilesPlaceholder />
-				</div>
-			</div>
+		<div
+			class="absolute left-1/2 top-1/2 flex max-w-[calc(100%-1rem)] -translate-x-1/2 -translate-y-1/2 items-center gap-1.5 rounded-lg bg-white/95 px-2.5 py-1.5 text-xs text-gray-600 shadow-sm ring-1 ring-black/5 dark:bg-gray-850/95 dark:text-gray-300 dark:ring-white/10"
+		>
+			<Icon name="upload-tray" size={14} strokeWidth={1.5} />
+			<span class="truncate">{$i18n.t('Drop to upload')}</span>
 		</div>
 	</div>
 {/if}

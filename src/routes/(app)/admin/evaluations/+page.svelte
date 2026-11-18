@@ -1,5 +1,8 @@
 <script>
-	import Evaluations from '$lib/components/admin/Evaluations.svelte';
-</script>
+	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 
-<Evaluations />
+	onMount(() => {
+		goto('/admin/evaluations/leaderboard', { replaceState: true });
+	});
+</script>
