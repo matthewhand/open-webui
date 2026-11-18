@@ -8,6 +8,7 @@ AUTOMATIC1111) with the image models it exposes. Users pick a model by its refer
 from __future__ import annotations
 
 import logging
+import os
 import uuid
 from typing import Any, Literal
 
@@ -20,6 +21,7 @@ from open_webui.models.groups import Groups
 from open_webui.models.users import UserModel
 from open_webui.utils.access_control import has_connection_access
 from open_webui.utils.headers import get_headers_and_cookies
+from open_webui.utils.images.hosted import HOSTED_IMAGE_PROVIDERS
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.session_pool import get_session
 
@@ -29,7 +31,12 @@ IMAGE_CONNECTIONS_CONFIG_KEY = 'images.connections'
 IMAGE_GENERATION_DEFAULT_MODEL_CONFIG_KEY = 'image_generation.default_model'
 IMAGE_EDIT_DEFAULT_MODEL_CONFIG_KEY = 'images.edit.default_model'
 
-IMAGE_CONNECTION_TYPES = ('openai', 'gemini', 'comfyui', 'automatic1111')
+IMAGE_CONNECTION_TYPES = ('openai', 'gemini', 'comfyui', 'automatic1111', *HOSTED_IMAGE_PROVIDERS)
+HOSTED_IMAGE_CONFIG_PREFIXES = {
+    'huggingface': 'image_generation.huggingface',
+    'replicate': 'image_generation.replicate',
+    'togetherai': 'image_generation.together_ai',
+}
 
 # The auth types chat model connections offer; only OpenAI compatible image connections use more than a key.
 IMAGE_CONNECTION_AUTH_TYPES = ('none', 'bearer', 'session', 'system_oauth', 'microsoft_entra_id')
@@ -115,6 +122,9 @@ def normalize_image_connection(connection: dict[str, Any]) -> dict[str, Any]:
         if model_id and model_id not in model_ids:
             model_ids.append(model_id)
 
+    if connection_type in HOSTED_IMAGE_PROVIDERS and not model_ids:
+        raise ValueError('Add a model ID for this image provider.')
+
     auth_type = str(config.get('auth_type') or 'bearer')
     if auth_type not in IMAGE_CONNECTION_AUTH_TYPES:
         raise ValueError(f'Unsupported auth type: {auth_type}')
@@ -133,8 +143,8 @@ def normalize_image_connection(connection: dict[str, Any]) -> dict[str, Any]:
         'id': connection_id,
         'name': str(connection.get('name') or '').strip() or connection_type,
         'type': connection_type,
-        'url': str(connection.get('url') or '').strip().rstrip('/'),
-        'key': str(connection.get('key') or ''),
+        'url': str(connection.get('url') or HOSTED_IMAGE_PROVIDERS.get(connection_type, '')).strip().rstrip('/'),
+        'key': str(connection.get('key') or '') if auth_type != 'none' or connection_type == 'openai' else '',
         'config': {
             'enable': bool(config.get('enable', True)),
             'capabilities': {
@@ -163,7 +173,7 @@ def get_image_connection_capabilities(connection: dict) -> dict[str, bool]:
     """What a connection's models can do: what its type supports (ComfyUI needs the matching
     workflow, AUTOMATIC1111 cannot edit), narrowed by the capabilities the admin turned on."""
     config = connection.get('config') or {}
-    if connection.get('type') == 'automatic1111':
+    if connection.get('type') in ('automatic1111', *HOSTED_IMAGE_PROVIDERS):
         supported = {'image_generation': True, 'image_edit': False}
     elif connection.get('type') == 'comfyui':
         supported = {'image_generation': bool(config.get('workflow')), 'image_edit': bool(config.get('edit_workflow'))}
@@ -410,6 +420,18 @@ def _legacy_generation_connection(values: dict) -> dict | None:
             nodes=values.get('image_generation.comfyui.nodes') or [],
         )
         configured = bool(url)
+    elif connection_type in HOSTED_IMAGE_PROVIDERS:
+        prefix = HOSTED_IMAGE_CONFIG_PREFIXES[connection_type]
+        env_prefix = f'IMAGES_{connection_type.upper()}'
+        url = (
+            values.get(f'{prefix}.base_url')
+            or os.getenv(f'{env_prefix}_BASE_URL')
+            or HOSTED_IMAGE_PROVIDERS[connection_type]
+        )
+        if connection_type == 'huggingface' and url.rstrip('/') == 'https://api-inference.huggingface.co':
+            url = HOSTED_IMAGE_PROVIDERS[connection_type]
+        key = values.get(f'{prefix}.api_key') or os.getenv(f'{env_prefix}_API_KEY') or ''
+        configured = bool(key and model)
     else:
         connection_type = 'automatic1111'
         url = values.get('image_generation.automatic1111.base_url') or ''
@@ -460,6 +482,7 @@ def _legacy_edit_connection(values: dict) -> dict | None:
 
 
 LEGACY_IMAGE_CONFIG_KEYS = (
+    *(f'{prefix}.{key}' for prefix in HOSTED_IMAGE_CONFIG_PREFIXES.values() for key in ('base_url', 'api_key')),
     'image_generation.enable',
     'image_generation.engine',
     'image_generation.model',
@@ -499,6 +522,9 @@ LEGACY_IMAGE_CONNECTION_NAMES = {
     'gemini': 'Gemini',
     'comfyui': 'ComfyUI',
     'automatic1111': 'AUTOMATIC1111',
+    'huggingface': 'Hugging Face',
+    'replicate': 'Replicate',
+    'togetherai': 'Together AI',
 }
 
 

@@ -53,6 +53,7 @@ from open_webui.utils.images.connections import (
     normalize_image_connection,
     resolve_image_model,
 )
+from open_webui.utils.images.hosted import HOSTED_IMAGE_PROVIDERS, generate_hosted_images
 from open_webui.utils.json_codec import JSONCodec
 from open_webui.utils.session_pool import get_session
 from PIL import Image, ImageOps
@@ -347,6 +348,8 @@ async def verify_image_connection(request: Request, form_data: ImageConnection, 
             return await get_gemini_connection_models(connection)
         if connection['type'] == 'comfyui':
             return await get_comfyui_connection_models(connection)
+        if connection['type'] in HOSTED_IMAGE_PROVIDERS:
+            raise ValueError('Connection verification is unavailable for this provider.')
         return await get_automatic1111_connection_models(connection)
     except Exception as e:
         log.error(
@@ -598,6 +601,30 @@ async def image_generations(
     metadata = metadata or {}
 
     try:
+        if connection['type'] in HOSTED_IMAGE_PROVIDERS:
+            image_outputs = await generate_hosted_images(
+                await get_session(),
+                connection,
+                model,
+                form_data.prompt,
+                (width, height),
+                form_data.n,
+                form_data.steps if form_data.steps is not None else connection_steps,
+                form_data.negative_prompt,
+                AIOHTTP_CLIENT_SESSION_SSL,
+                raise_for_provider_status,
+            )
+            if not image_outputs:
+                raise ValueError('The provider did not return any generated images.')
+            hosted_images = []
+            for output in image_outputs:
+                image_data, content_type = await get_image_data(output) if isinstance(output, str) else output
+                _, image_file = await upload_image(
+                    request, image_data, content_type, {'model': model, 'prompt': form_data.prompt, **metadata}, user
+                )
+                hosted_images.append(image_file)
+            return hosted_images
+
         if connection['type'] == 'openai':
             model = model or DEFAULT_OPENAI_IMAGE_MODEL
             headers, cookies = await get_headers_and_cookies(

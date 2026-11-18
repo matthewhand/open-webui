@@ -20,11 +20,17 @@
 	import ComfyUIWorkflow from './ComfyUIWorkflow.svelte';
 	import {
 		getSupportedImageCapabilities,
+		hostedImageProviderUrls,
 		type ImageCapabilities,
 		type ImageCapability
 	} from '$lib/utils/images';
 
-	type ConnectionType = 'openai' | 'gemini' | 'comfyui' | 'automatic1111';
+	type ConnectionType =
+		| 'openai'
+		| 'gemini'
+		| 'comfyui'
+		| 'automatic1111'
+		| keyof typeof hostedImageProviderUrls;
 	type WorkflowNode = { type: string; key: string; node_ids: string };
 
 	export let onSubmit: Function = () => {};
@@ -86,11 +92,16 @@
 	const selectClass =
 		'bg-transparent pr-5 outline-hidden placeholder:text-gray-300 dark:placeholder:text-gray-700';
 
+	$: isHostedProvider = Object.hasOwn(hostedImageProviderUrls, connectionType);
+
 	$: typeLabel = {
 		openai: $i18n.t('OpenAI compatible'),
 		gemini: $i18n.t('Gemini'),
 		comfyui: $i18n.t('ComfyUI'),
-		automatic1111: $i18n.t('AUTOMATIC1111')
+		automatic1111: $i18n.t('AUTOMATIC1111'),
+		huggingface: 'Hugging Face',
+		replicate: 'Replicate',
+		togetherai: 'Together AI'
 	}[connectionType];
 
 	// Only OpenAI compatible connections authenticate the way chat model connections do.
@@ -110,6 +121,7 @@
 
 	const unsupportedCapabilityHint = (capability: ImageCapability) => {
 		if (connectionType === 'automatic1111') return $i18n.t('AUTOMATIC1111 cannot edit images');
+		if (isHostedProvider) return typeLabel;
 		return capability === 'image_generation'
 			? $i18n.t('Upload a generation workflow to generate images')
 			: $i18n.t('Upload an edit workflow to edit images');
@@ -156,7 +168,11 @@
 	};
 
 	const validate = () => {
-		if (!url) {
+		if (isHostedProvider && modelIds.length === 0) {
+			toast.error($i18n.t('Add a model ID'));
+			return false;
+		}
+		if (!url && !isHostedProvider) {
 			toast.error($i18n.t('URL is required'));
 			return false;
 		}
@@ -365,6 +381,9 @@
 									<option value="gemini">{$i18n.t('Gemini')}</option>
 									<option value="comfyui">{$i18n.t('ComfyUI')}</option>
 									<option value="automatic1111">{$i18n.t('AUTOMATIC1111')}</option>
+									<option value="huggingface">Hugging Face</option>
+									<option value="replicate">Replicate</option>
+									<option value="togetherai">Together AI</option>
 								</select>
 							</div>
 						</div>
@@ -438,9 +457,13 @@
 										class={`w-full text-sm ${inputClass}`}
 										type="text"
 										bind:value={url}
-										placeholder={connectionType === 'openai' || connectionType === 'gemini'
-											? $i18n.t('API Base URL')
-											: $i18n.t('Enter URL (e.g. http://127.0.0.1:7860/)')}
+										placeholder={isHostedProvider
+											? hostedImageProviderUrls[
+													connectionType as keyof typeof hostedImageProviderUrls
+												]
+											: connectionType === 'openai' || connectionType === 'gemini'
+												? $i18n.t('API Base URL')
+												: $i18n.t('Enter URL (e.g. http://127.0.0.1:7860/)')}
 										autocomplete="off"
 										list={connectionType === 'openai'
 											? 'image-connection-openai-urls'
@@ -459,30 +482,32 @@
 								</div>
 							</div>
 
-							<Tooltip content={$i18n.t('Verify Connection')} className="self-end -mb-1">
-								<button
-									class="self-center p-1 bg-transparent hover:bg-gray-100 dark:hover:bg-gray-850 rounded-lg transition"
-									on:click={() => {
-										verifyHandler();
-									}}
-									type="button"
-									aria-label={$i18n.t('Verify Connection')}
-								>
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										viewBox="0 0 20 20"
-										fill="currentColor"
-										aria-hidden="true"
-										class="w-4 h-4"
+							{#if !isHostedProvider}
+								<Tooltip content={$i18n.t('Verify Connection')} className="self-end -mb-1">
+									<button
+										class="self-center p-1 bg-transparent hover:bg-gray-100 dark:hover:bg-gray-850 rounded-lg transition"
+										on:click={() => {
+											verifyHandler();
+										}}
+										type="button"
+										aria-label={$i18n.t('Verify Connection')}
 									>
-										<path
-											fill-rule="evenodd"
-											d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
-											clip-rule="evenodd"
-										/>
-									</svg>
-								</button>
-							</Tooltip>
+										<svg
+											xmlns="http://www.w3.org/2000/svg"
+											viewBox="0 0 20 20"
+											fill="currentColor"
+											aria-hidden="true"
+											class="w-4 h-4"
+										>
+											<path
+												fill-rule="evenodd"
+												d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z"
+												clip-rule="evenodd"
+											/>
+										</svg>
+									</button>
+								</Tooltip>
+							{/if}
 
 							<div class="flex flex-col shrink-0 self-end">
 								<label class="sr-only" for="toggle-image-connection"
@@ -600,6 +625,8 @@
 										{$i18n.t('Leave empty to use {{model}}', { model: 'imagen-3.0-generate-002' })}
 									{:else if connectionType === 'comfyui'}
 										{$i18n.t('Leave empty to use the model set in the workflow')}
+									{:else if isHostedProvider}
+										{$i18n.t('Add a model ID')}
 									{:else}
 										{$i18n.t('Leave empty to use the checkpoint loaded in AUTOMATIC1111')}
 									{/if}
@@ -713,7 +740,7 @@
 									/>
 								</div>
 
-								{#if connectionType !== 'automatic1111'}
+								{#if connectionType !== 'automatic1111' && !isHostedProvider}
 									<div class="flex flex-col w-full">
 										<label for="image-connection-edit-size" class="mb-0.5 text-xs text-gray-500"
 											>{$i18n.t('Edit Image Size')}</label
@@ -730,7 +757,7 @@
 								{/if}
 							</div>
 
-							{#if connectionType === 'comfyui' || connectionType === 'automatic1111'}
+							{#if connectionType === 'comfyui' || connectionType === 'automatic1111' || isHostedProvider}
 								<div class="flex gap-2 mt-2">
 									<div class="flex flex-col w-full">
 										<label for="image-connection-steps" class="mb-0.5 text-xs text-gray-500"
@@ -813,7 +840,7 @@
 								</div>
 							{/if}
 
-							{#if connectionType === 'openai' || connectionType === 'automatic1111'}
+							{#if connectionType === 'openai' || connectionType === 'automatic1111' || isHostedProvider}
 								<div class="flex gap-2 mt-2">
 									<div class="flex flex-col w-full">
 										<label for="image-connection-params" class="mb-0.5 text-xs text-gray-500"
