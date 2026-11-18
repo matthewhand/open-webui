@@ -1,3 +1,5 @@
+x.py
+yarn.lock
 .DS_Store
 node_modules
 /build
@@ -12,7 +14,8 @@ vite.config.ts.timestamp-*
 __pycache__/
 *.py[cod]
 *$py.class
-
+.nvmrc
+CLAUDE.md
 # C extensions
 *.so
 
@@ -307,7 +310,12 @@ dist
 cypress/videos
 cypress/screenshots
 .vscode/settings.json
+.cptr
+/evals/
 
+# Local temporary fixtures and screenshots
+/tmp/
+
+# Fork-local data
 ollama-data
-
 lightrag_cache*

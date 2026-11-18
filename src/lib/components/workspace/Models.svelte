@@ -1,75 +1,270 @@
 <script lang="ts">
-	import { marked } from 'marked';
+	import type { WorkspaceContext } from '$lib/types';
+	import { getPageContext } from '$lib/utils/page';
+	const { goto } = getPageContext();
 
+	import Comments from '$lib/components/comments/Comments.svelte';
+	import type { CommentsRequest } from '$lib/components/comments/CommentsPanel.svelte';
+	let comments: CommentsRequest | null = null;
+	import CommentButton from '$lib/components/comments/CommentButton.svelte';
+	import WorkspaceAccessModal from './common/WorkspaceAccessModal.svelte';
+	let accessModal: WorkspaceAccessModal;
+	import dayjs from 'dayjs';
+	import relativeTime from 'dayjs/plugin/relativeTime';
 	import { toast } from 'svelte-sonner';
 	import Sortable from 'sortablejs';
 
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
-	import { onMount, getContext, tick } from 'svelte';
-	import { goto } from '$app/navigation';
-	const i18n = getContext('i18n');
+	import { onMount, getContext, tick, onDestroy } from 'svelte';
 
-	import { WEBUI_NAME, config, mobile, models as _models, settings, user } from '$lib/stores';
+	const i18n = getContext<any>('i18n');
+	const { workspaceActions, workspaceCounts } = getContext<WorkspaceContext>('workspace');
+	dayjs.extend(relativeTime);
+
 	import {
-		createNewModel,
+		WEBUI_NAME,
+		config,
+		mobile,
+		models as _models,
+		pinnedModels,
+		settings,
+		user
+	} from '$lib/stores';
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
+	import {
+		exportModels,
+		importModels,
 		deleteModelById,
-		getModels as getWorkspaceModels,
+		getModelById,
+		getModelItems as getWorkspaceModels,
+		getModelTags,
 		toggleModelById,
 		updateModelById
 	} from '$lib/apis/models';
 
 	import { getModels } from '$lib/apis';
+	import { getGroups } from '$lib/apis/groups';
+	import { updateUserSettings } from '$lib/apis/users';
+
+	import { capitalizeFirstLetter, copyToClipboard } from '$lib/utils';
+	import {
+		resolveLocalizedModelDescription,
+		resolveLocalizedModelName
+	} from '$lib/utils/localizedContent';
 
 	import EllipsisHorizontal from '../icons/EllipsisHorizontal.svelte';
+	import ArrowRight from '../icons/ArrowRight.svelte';
+	import CheckCircle from '../icons/CheckCircle.svelte';
+	import Minus from '../icons/Minus.svelte';
 	import ModelMenu from './Models/ModelMenu.svelte';
 	import ModelDeleteConfirmDialog from '../common/ConfirmDialog.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
+	import ProfilePreview from '$lib/components/channel/Messages/Message/ProfilePreview.svelte';
+	import ProfileImage from '$lib/components/chat/Messages/ProfileImage.svelte';
 	import GarbageBin from '../icons/GarbageBin.svelte';
 	import Search from '../icons/Search.svelte';
-	import Plus from '../icons/Plus.svelte';
-	import ChevronRight from '../icons/ChevronRight.svelte';
 	import Switch from '../common/Switch.svelte';
 	import Spinner from '../common/Spinner.svelte';
-	import { capitalizeFirstLetter } from '$lib/utils';
+	import XMark from '../icons/XMark.svelte';
+	import EyeSlash from '../icons/EyeSlash.svelte';
+	import Eye from '../icons/Eye.svelte';
+	import ChevronDown from '../icons/ChevronDown.svelte';
+	import ChevronUp from '../icons/ChevronUp.svelte';
+
+	import Dropdown from '$lib/components/common/Dropdown.svelte';
+	import DropdownMenu from '$lib/components/common/DropdownMenu.svelte';
+	import ViewSelector from './common/ViewSelector.svelte';
+	import TagSelector from './common/TagSelector.svelte';
+	import CommunityDiscover from './common/CommunityDiscover.svelte';
+	import Pagination from '../common/Pagination.svelte';
+	import Badge from '$lib/components/common/Badge.svelte';
 
 	let shiftKey = false;
 
 	let importFiles;
 	let modelsImportInputElement: HTMLInputElement;
+	let tagsContainerElement: HTMLDivElement;
+
 	let loaded = false;
-
-	let models = [];
-
-	let filteredModels = [];
-	let selectedModel = null;
 
 	let showModelDeleteConfirm = false;
 
-	$: if (models) {
-		filteredModels = models.filter(
-			(m) => searchValue === '' || m.name.toLowerCase().includes(searchValue.toLowerCase())
-		);
+	let selectedModel = null;
+	let updatingModels: Record<string, boolean> = {};
+
+	let groupIds = [];
+
+	let tags = [];
+	let selectedTag = '';
+
+	let query = '';
+	let viewOption = '';
+	$: hasFilters = Boolean(query || viewOption || selectedTag);
+
+	let sortKey = 'updated_at';
+	let sortDirection = 'desc';
+
+	let page = 1;
+	let models = null;
+	let total = null;
+
+	let searchDebounceTimer: ReturnType<typeof setTimeout>;
+	let searchController: AbortController;
+
+	onDestroy(() => {
+		clearTimeout(searchDebounceTimer);
+		searchController?.abort();
+	});
+
+	$: if (loaded) {
+		workspaceActions.set([
+			{
+				id: 'models-new',
+				label: $i18n.t('Create'),
+				href: '/workspace/models/create'
+			},
+			{
+				id: 'models-import',
+				label: $i18n.t('Import JSON'),
+				onClick: () => modelsImportInputElement?.click(),
+				visible: $user?.role === 'admin' || $user?.permissions?.workspace?.models_import
+			},
+			{
+				id: 'models-export',
+				label: $i18n.t('Export JSON'),
+				onClick: async () => {
+					await downloadModels();
+				},
+				visible: $user?.role === 'admin' || $user?.permissions?.workspace?.models_export
+			}
+		]);
 	}
 
-	let searchValue = '';
+	$: if (
+		loaded &&
+		page !== undefined &&
+		selectedTag !== undefined &&
+		viewOption !== undefined &&
+		sortKey !== undefined &&
+		sortDirection !== undefined
+	) {
+		getModelList();
+	}
+
+	const setSortKey = (key: string) => {
+		if (sortKey === key) {
+			sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortKey = key;
+			sortDirection = key === 'updated_at' ? 'desc' : 'asc';
+		}
+	};
+
+	const openModel = (model) => {
+		if (model.write_access) {
+			goto(`/workspace/models/edit?id=${encodeURIComponent(model.id)}`);
+		}
+	};
+
+	const shouldIgnoreRowClick = (target: EventTarget | null) => {
+		return target instanceof Element && !!target.closest('button, a, input, [role="menu"]');
+	};
+
+	const confirmDeleteModel = (model: any) => {
+		selectedModel = model;
+		showModelDeleteConfirm = true;
+	};
+
+	const toggleModelHandler = async (model: any) => {
+		if (updatingModels[model.id]) return;
+		const previousState = !model.is_active;
+		updatingModels = { ...updatingModels, [model.id]: true };
+
+		try {
+			const updatedModel = await toggleModelById(localStorage.token, model.id);
+			model.is_active = updatedModel.is_active;
+			models = models;
+		} catch (error: any) {
+			model.is_active = previousState;
+			models = models;
+			toast.error(`${error?.detail ?? error}`);
+			return;
+		} finally {
+			updatingModels = { ...updatingModels, [model.id]: false };
+		}
+
+		try {
+			_models.set(await getModels(localStorage.token));
+		} catch (error: any) {
+			toast.error(`${error?.detail ?? error}`);
+		}
+	};
+
+	const getModelList = async () => {
+		if (!loaded) return;
+
+		clearTimeout(searchDebounceTimer);
+		searchController?.abort();
+		searchController = new AbortController();
+		const { signal } = searchController;
+
+		try {
+			const res = await getWorkspaceModels(
+				localStorage.token,
+				query,
+				viewOption,
+				selectedTag,
+				sortKey,
+				sortDirection,
+				page,
+				signal
+			).catch((error) => {
+				if (!signal.aborted) toast.error(`${error}`);
+				return null;
+			});
+
+			if (signal.aborted) return;
+
+			if (res) {
+				models = res.items;
+				total = res.total;
+				workspaceCounts.update((counts) => ({ ...counts, models: total }));
+
+				// get tags
+				const fetchedTags = await getModelTags(localStorage.token).catch((error) => {
+					if (!signal.aborted) toast.error(`${error}`);
+					return [];
+				});
+				if (!signal.aborted) tags = fetchedTags;
+			}
+		} catch (err) {
+			console.error(err);
+		}
+	};
 
 	const deleteModelHandler = async (model) => {
 		const res = await deleteModelById(localStorage.token, model.id).catch((e) => {
-			toast.error(e);
+			toast.error(`${e}`);
 			return null;
 		});
 
 		if (res) {
 			toast.success($i18n.t(`Deleted {{name}}`, { name: model.id }));
+
+			page = 1;
+			getModelList();
 		}
 
 		await _models.set(await getModels(localStorage.token));
-		models = await getWorkspaceModels(localStorage.token);
 	};
 
+	const getFullModel = async (model: any) =>
+		(await getModelById(localStorage.token, model.id).catch(() => null)) ?? model;
+
 	const cloneModelHandler = async (model) => {
+		model = await getFullModel(model);
 		sessionStorage.model = JSON.stringify({
 			...model,
 			id: `${model.id}-clone`,
@@ -79,19 +274,20 @@
 	};
 
 	const shareModelHandler = async (model) => {
-		toast.success($i18n.t('Redirecting you to OpenWebUI Community'));
+		// LICENSE covers this Open WebUI Community wordmark.
+		// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+		// https://docs.openwebui.com/license.
+		toast.success($i18n.t('Redirecting you to Open WebUI Community'));
 
 		const url = 'https://openwebui.com';
+		const fullModel = getFullModel(model);
 
-		const tab = await window.open(`${url}/models/create`, '_blank');
+		const tab = await window.open(`${url}/post?type=model`, '_blank');
 
-		// Define the event handler function
-		const messageHandler = (event) => {
+		const messageHandler = async (event) => {
 			if (event.origin !== url) return;
 			if (event.data === 'loaded') {
-				tab.postMessage(JSON.stringify(model), '*');
-
-				// Remove the event listener after handling the message
+				tab.postMessage(JSON.stringify(await fullModel), '*');
 				window.removeEventListener('message', messageHandler);
 			}
 		};
@@ -100,42 +296,53 @@
 	};
 
 	const hideModelHandler = async (model) => {
-		let info = model.info;
-
-		if (!info) {
-			info = {
-				id: model.id,
-				name: model.name,
-				meta: {
-					suggestion_prompts: null
-				},
-				params: {}
-			};
-		}
-
-		info.meta = {
-			...info.meta,
-			hidden: !(info?.meta?.hidden ?? false)
+		const updatedModel = {
+			...model,
+			meta: {
+				...model.meta,
+				hidden: !(model?.meta?.hidden ?? false)
+			}
 		};
 
-		console.log(info);
-
-		const res = await updateModelById(localStorage.token, info.id, info);
+		const res = await updateModelById(localStorage.token, updatedModel.id, updatedModel);
 
 		if (res) {
+			models = models.map((model) => (model.id === updatedModel.id ? updatedModel : model));
 			toast.success(
 				$i18n.t(`Model {{name}} is now {{status}}`, {
-					name: info.id,
-					status: info.meta.hidden ? 'hidden' : 'visible'
+					name: updatedModel.id,
+					status: updatedModel.meta.hidden ? 'hidden' : 'visible'
 				})
 			);
+
+			page = 1;
+			await getModelList();
 		}
 
 		await _models.set(await getModels(localStorage.token));
-		models = await getWorkspaceModels(localStorage.token);
 	};
 
-	const downloadModels = async (models) => {
+	const copyLinkHandler = async (model) => {
+		const baseUrl = window.location.origin;
+		const res = await copyToClipboard(`${baseUrl}/?model=${encodeURIComponent(model.id)}`);
+
+		if (res) {
+			toast.success($i18n.t('Copied link to clipboard'));
+		} else {
+			toast.error($i18n.t('Failed to copy link'));
+		}
+	};
+
+	const downloadModels = async (models = null) => {
+		try {
+			models = await exportModels(
+				localStorage.token,
+				models ? models.map((model: { id: string }) => model.id) : undefined
+			);
+		} catch (error: any) {
+			toast.error(`${error?.detail ?? error}`);
+			return;
+		}
 		let blob = new Blob([JSON.stringify(models)], {
 			type: 'application/json'
 		});
@@ -143,19 +350,140 @@
 	};
 
 	const exportModelHandler = async (model) => {
+		try {
+			[model] = await exportModels(localStorage.token, [model.id]);
+		} catch (error: any) {
+			toast.error(`${error?.detail ?? error}`);
+			return;
+		}
 		let blob = new Blob([JSON.stringify([model])], {
 			type: 'application/json'
 		});
 		saveAs(blob, `${model.id}-${Date.now()}.json`);
 	};
 
-	onMount(async () => {
-		models = await getWorkspaceModels(localStorage.token);
+	const pinModelHandler = async (modelId) => {
+		settings.set({
+			...$settings,
+			pinnedModels: $pinnedModels.includes(modelId)
+				? $pinnedModels.filter((id) => id !== modelId)
+				: [...$pinnedModels, modelId]
+		});
+		await updateUserSettings(localStorage.token, { ui: { pinnedModels: $settings.pinnedModels } });
+	};
 
+	const fetchAllWorkspaceModels = async () => {
+		// Fetch all workspace models across every page
+		const allModels = [];
+		let currentPage = 1;
+		let fetchedTotal = 0;
+
+		while (true) {
+			const res = await getWorkspaceModels(
+				localStorage.token,
+				query,
+				viewOption,
+				selectedTag,
+				null,
+				null,
+				currentPage
+			);
+			if (!res || !res.items || res.items.length === 0) break;
+			allModels.push(...res.items);
+			fetchedTotal = res.total;
+			if (allModels.length >= fetchedTotal) break;
+			currentPage++;
+		}
+
+		return allModels;
+	};
+
+	const enableAllHandler = async () => {
+		const allModels = await fetchAllWorkspaceModels();
+		const modelsToEnable = allModels.filter((m) => !(m.is_active ?? true));
+		if (modelsToEnable.length === 0) return;
+		// Optimistic UI update for current page
+		(models ?? []).forEach((m) => (m.is_active = true));
+		models = models;
+		// Sync with server
+		await Promise.all(modelsToEnable.map((model) => toggleModelById(localStorage.token, model.id)));
+		await getModelList();
+	};
+
+	const disableAllHandler = async () => {
+		const allModels = await fetchAllWorkspaceModels();
+		const modelsToDisable = allModels.filter((m) => m.is_active ?? true);
+		if (modelsToDisable.length === 0) return;
+		// Optimistic UI update for current page
+		(models ?? []).forEach((m) => (m.is_active = false));
+		models = models;
+		// Sync with server
+		await Promise.all(
+			modelsToDisable.map((model) => toggleModelById(localStorage.token, model.id))
+		);
+		await getModelList();
+	};
+
+	const showAllHandler = async () => {
+		const allModels = await fetchAllWorkspaceModels();
+		const modelsToShow = allModels.filter((m) => m?.meta?.hidden === true);
+		if (modelsToShow.length === 0) return;
+		// Optimistic UI update for current page
+		(models ?? []).forEach((m) => {
+			m.meta = { ...m.meta, hidden: false };
+		});
+		models = models;
+		// Sync with server
+		await Promise.all(
+			modelsToShow.map((model) => {
+				model.meta = { ...model.meta, hidden: false };
+				return updateModelById(localStorage.token, model.id, model);
+			})
+		);
+		await getModelList();
+		toast.success($i18n.t('All models are now visible'));
+	};
+
+	const hideAllHandler = async () => {
+		const allModels = await fetchAllWorkspaceModels();
+		const modelsToHide = allModels.filter((m) => !(m?.meta?.hidden ?? false));
+		if (modelsToHide.length === 0) return;
+		// Optimistic UI update for current page
+		(models ?? []).forEach((m) => {
+			m.meta = { ...m.meta, hidden: true };
+		});
+		models = models;
+		// Sync with server
+		await Promise.all(
+			modelsToHide.map((model) => {
+				model.meta = { ...model.meta, hidden: true };
+				return updateModelById(localStorage.token, model.id, model);
+			})
+		);
+		await getModelList();
+		toast.success($i18n.t('All models are now hidden'));
+	};
+
+	onMount(async () => {
+		viewOption = localStorage.workspaceViewOption ?? '';
+		page = 1;
+
+		let groups = await getGroups(localStorage.token);
+		groupIds = groups.map((group) => group.id);
+
+		await tick();
 		loaded = true;
 
+		let keyboardFocusedElement: Element | null = null;
+		const onFocusIn = (event: FocusEvent) => {
+			const target = event.target as Element;
+			keyboardFocusedElement = target.matches(':focus-visible:not(input, textarea)')
+				? target
+				: null;
+		};
+
 		const onKeyDown = (event) => {
-			if (event.key === 'Shift') {
+			if (event.key === 'Shift' && document.activeElement !== keyboardFocusedElement) {
 				shiftKey = true;
 			}
 		};
@@ -170,335 +498,543 @@
 			shiftKey = false;
 		};
 
+		window.addEventListener('focusin', onFocusIn);
 		window.addEventListener('keydown', onKeyDown);
 		window.addEventListener('keyup', onKeyUp);
 		window.addEventListener('blur', onBlur);
 
 		return () => {
+			window.removeEventListener('focusin', onFocusIn);
 			window.removeEventListener('keydown', onKeyDown);
 			window.removeEventListener('keyup', onKeyUp);
 			window.removeEventListener('blur', onBlur);
 		};
 	});
+	import PageTitle from '$lib/components/common/PageTitle.svelte';
 </script>
 
-<svelte:head>
-	<title>
-		{$i18n.t('Models')} | {$WEBUI_NAME}
-	</title>
-</svelte:head>
+<WorkspaceAccessModal bind:this={accessModal} resourceType="models" onUpdated={getModelList} />
 
-{#if loaded}
-	<ModelDeleteConfirmDialog
-		bind:show={showModelDeleteConfirm}
-		on:confirm={() => {
-			deleteModelHandler(selectedModel);
-		}}
-	/>
+<!-- LICENSE covers this Open WebUI browser-title identifier.
+	Do not alter, remove, obscure, or replace it except as LICENSE permits:
+	https://docs.openwebui.com/license. -->
+<PageTitle title={$i18n.t('Models') + ' / ' + $WEBUI_NAME} />
 
-	<div class="flex flex-col gap-1 my-1.5">
-		<div class="flex justify-between items-center">
-			<div class="flex items-center md:self-center text-xl font-medium px-0.5">
-				{$i18n.t('Models')}
-				<div class="flex self-center w-[1px] h-6 mx-2.5 bg-gray-50 dark:bg-gray-850" />
-				<span class="text-lg font-medium text-gray-500 dark:text-gray-300"
-					>{filteredModels.length}</span
-				>
-			</div>
-		</div>
+<h1 class="sr-only">{$i18n.t('Models')}</h1>
 
-		<div class=" flex flex-1 items-center w-full space-x-2">
-			<div class="flex flex-1 items-center">
-				<div class=" self-center ml-1 mr-3">
-					<Search className="size-3.5" />
-				</div>
-				<input
-					class=" w-full text-sm py-1 rounded-r-xl outline-none bg-transparent"
-					bind:value={searchValue}
-					placeholder={$i18n.t('Search Models')}
-				/>
-			</div>
+<Comments modal bind:view={comments} resourceType="model">
+	{#if loaded && models !== null && total !== null}
+		<ModelDeleteConfirmDialog
+			bind:show={showModelDeleteConfirm}
+			on:confirm={() => {
+				deleteModelHandler(selectedModel);
+			}}
+		/>
 
-			<div>
-				<a
-					class=" px-2 py-2 rounded-xl hover:bg-gray-700/10 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition font-medium text-sm flex items-center space-x-1"
-					href="/workspace/models/create"
-				>
-					<Plus className="size-3.5" />
-				</a>
-			</div>
-		</div>
-	</div>
+		<input
+			id="models-import-input"
+			bind:this={modelsImportInputElement}
+			bind:files={importFiles}
+			type="file"
+			accept=".json"
+			hidden
+			on:change={() => {
+				console.log(importFiles);
 
-	<div class=" my-2 mb-5 gap-2 grid lg:grid-cols-2 xl:grid-cols-3" id="model-list">
-		{#each filteredModels as model}
-			<div
-				class=" flex flex-col cursor-pointer w-full px-3 py-2 dark:hover:bg-white/5 hover:bg-black/5 rounded-xl transition"
-				id="model-item-{model.id}"
-			>
-				<div class="flex gap-4 mt-0.5 mb-0.5">
-					<div class=" w-[44px]">
-						<div
-							class=" rounded-full object-cover {model.is_active
-								? ''
-								: 'opacity-50 dark:opacity-50'} "
-						>
-							<img
-								src={model?.meta?.profile_image_url ?? '/static/favicon.png'}
-								alt="modelfile profile"
-								class=" rounded-full w-full h-auto object-cover"
-							/>
-						</div>
+				let reader = new FileReader();
+				reader.onload = async (event) => {
+					let savedModels = [];
+					try {
+						savedModels = JSON.parse(event.target.result);
+						console.log(savedModels);
+					} catch (e) {
+						toast.error($i18n.t('Invalid JSON file'));
+						return;
+					}
+
+					if (!Array.isArray(savedModels)) {
+						toast.error($i18n.t('Invalid JSON file'));
+						return;
+					}
+					try {
+						await importModels(
+							localStorage.token,
+							savedModels.map((model) => model.info ?? model)
+						);
+					} catch (error: any) {
+						toast.error(`${error?.detail ?? error}`);
+						return;
+					}
+
+					await _models.set(await getModels(localStorage.token));
+
+					page = 1;
+					getModelList();
+				};
+
+				reader.readAsText(importFiles[0]);
+			}}
+		/>
+
+		<div class="space-y-0">
+			<div class="flex h-8 flex-1 items-center w-full gap-2">
+				<div class="flex min-w-0 flex-1 items-center">
+					<div class=" self-center ml-1 mr-3">
+						<Search className="size-3.5" />
 					</div>
+					<input
+						class=" w-full text-sm py-1 rounded-r-xl outline-hidden bg-transparent"
+						bind:value={query}
+						aria-label={$i18n.t('Search Models')}
+						placeholder={$i18n.t('Search Models')}
+						maxlength="500"
+						on:input={() => {
+							searchController?.abort();
+							clearTimeout(searchDebounceTimer);
+							searchDebounceTimer = setTimeout(() => {
+								page = 1;
+								getModelList();
+							}, 300);
+						}}
+					/>
 
-					<a
-						class=" flex flex-1 cursor-pointer w-full"
-						href={`/?models=${encodeURIComponent(model.id)}`}
+					{#if query}
+						<div class="self-center pl-1.5 translate-y-[0.5px] rounded-l-xl bg-transparent">
+							<button
+								class="py-0.5 rounded-full transition hover:text-gray-900 dark:hover:text-gray-100 text-gray-500 dark:text-gray-400 px-0"
+								aria-label={$i18n.t('Clear search')}
+								on:click={() => {
+									query = '';
+									page = 1;
+									getModelList();
+								}}
+							>
+								<XMark className="size-3" strokeWidth="2" />
+							</button>
+						</div>
+					{/if}
+				</div>
+
+				<div
+					class="flex max-w-[60%] shrink-0 items-center gap-1 overflow-x-auto scrollbar-none"
+					bind:this={tagsContainerElement}
+					on:wheel={(e) => {
+						if (e.deltaY !== 0) {
+							e.preventDefault();
+							e.currentTarget.scrollLeft += e.deltaY;
+						}
+					}}
+				>
+					<div
+						class="flex w-fit gap-0.5 text-center text-sm rounded-full bg-transparent whitespace-nowrap"
 					>
-						<div class=" flex-1 self-center {model.is_active ? '' : 'text-gray-500'}">
-							<Tooltip
-								content={marked.parse(model?.meta?.description ?? model.id)}
-								className=" w-fit"
-								placement="top-start"
-							>
-								<div class=" font-semibold line-clamp-1">{model.name}</div>
-							</Tooltip>
+						<ViewSelector
+							bind:value={viewOption}
+							align="end"
+							onChange={async (value) => {
+								localStorage.workspaceViewOption = value;
+								page = 1;
+								await tick();
+							}}
+						/>
 
-							<div class="flex gap-1 text-xs overflow-hidden">
-								<div class="line-clamp-1">
-									{#if (model?.meta?.description ?? '').trim()}
-										{model?.meta?.description}
-									{:else}
-										{model.id}
-									{/if}
-								</div>
-							</div>
-						</div>
-					</a>
-				</div>
-
-				<div class="flex justify-between items-center -mb-0.5 px-0.5">
-					<div class=" text-xs mt-0.5">
-						<Tooltip
-							content={model?.user?.email ?? $i18n.t('Deleted User')}
-							className="flex shrink-0"
-							placement="top-start"
-						>
-							<div class="shrink-0 text-gray-500">
-								{$i18n.t('By {{name}}', {
-									name: capitalizeFirstLetter(
-										model?.user?.name ?? model?.user?.email ?? $i18n.t('Deleted User')
-									)
+						{#if (tags ?? []).length > 0}
+							<TagSelector
+								bind:value={selectedTag}
+								align="end"
+								items={tags.map((tag) => {
+									return { value: tag, label: tag };
 								})}
-							</div>
-						</Tooltip>
-					</div>
-
-					<div class="flex flex-row gap-0.5 items-center">
-						{#if shiftKey}
-							<Tooltip content={$i18n.t('Delete')}>
-								<button
-									class="self-center w-fit text-sm px-2 py-2 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-									type="button"
-									on:click={() => {
-										deleteModelHandler(model);
-									}}
-								>
-									<GarbageBin />
-								</button>
-							</Tooltip>
-						{:else}
-							{#if $user?.role === 'admin' || model.user_id === $user?.id}
-								<a
-									class="self-center w-fit text-sm px-2 py-2 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-									type="button"
-									href={`/workspace/models/edit?id=${encodeURIComponent(model.id)}`}
-								>
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										fill="none"
-										viewBox="0 0 24 24"
-										stroke-width="1.5"
-										stroke="currentColor"
-										class="w-4 h-4"
-									>
-										<path
-											stroke-linecap="round"
-											stroke-linejoin="round"
-											d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125"
-										/>
-									</svg>
-								</a>
-							{/if}
-
-							<ModelMenu
-								user={$user}
-								{model}
-								shareHandler={() => {
-									shareModelHandler(model);
+								onChange={async () => {
+									page = 1;
+									await tick();
 								}}
-								cloneHandler={() => {
-									cloneModelHandler(model);
-								}}
-								exportHandler={() => {
-									exportModelHandler(model);
-								}}
-								hideHandler={() => {
-									hideModelHandler(model);
-								}}
-								deleteHandler={() => {
-									selectedModel = model;
-									showModelDeleteConfirm = true;
-								}}
-								onClose={() => {}}
-							>
-								<button
-									class="self-center w-fit text-sm p-1.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-									type="button"
-								>
-									<EllipsisHorizontal className="size-5" />
-								</button>
-							</ModelMenu>
-
-							<div class="ml-1">
-								<Tooltip content={model.is_active ? $i18n.t('Enabled') : $i18n.t('Disabled')}>
-									<Switch
-										bind:state={model.is_active}
-										on:change={async (e) => {
-											toggleModelById(localStorage.token, model.id);
-											_models.set(await getModels(localStorage.token));
-										}}
-									/>
-								</Tooltip>
-							</div>
+							/>
 						{/if}
 					</div>
+
+					<Dropdown align="end">
+						<Tooltip content={$i18n.t('Actions')}>
+							<button
+								class="flex h-8 min-w-0 max-w-28 items-center gap-1.5 rounded-xl bg-transparent px-1.5 text-[0.8125rem] font-normal text-gray-700 transition hover:text-gray-900 dark:text-gray-200 dark:hover:text-gray-100"
+								type="button"
+							>
+								<span class="min-w-0 truncate">{$i18n.t('Actions')}</span>
+								<ChevronDown className="size-3" strokeWidth="2.5" />
+							</button>
+						</Tooltip>
+
+						<div slot="content">
+							<DropdownMenu className="min-w-[10.625rem] shadow-sm">
+								<button
+									class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-xl bg-transparent px-2 text-[0.8125rem] hover:text-gray-900 dark:hover:text-gray-100"
+									type="button"
+									on:click={() => {
+										enableAllHandler();
+									}}
+								>
+									<CheckCircle className="size-3.5" />
+									<div class="flex items-center">{$i18n.t('Enable All')}</div>
+								</button>
+
+								<button
+									class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-xl bg-transparent px-2 text-[0.8125rem] hover:text-gray-900 dark:hover:text-gray-100"
+									type="button"
+									on:click={() => {
+										disableAllHandler();
+									}}
+								>
+									<Minus className="size-3.5" />
+									<div class="flex items-center">{$i18n.t('Disable All')}</div>
+								</button>
+
+								<hr class="mx-1 my-0.5 border-gray-100 dark:border-gray-800" />
+
+								<button
+									class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-xl bg-transparent px-2 text-[0.8125rem] hover:text-gray-900 dark:hover:text-gray-100"
+									type="button"
+									on:click={() => {
+										showAllHandler();
+									}}
+								>
+									<Eye className="size-3.5" />
+									<div class="flex items-center">{$i18n.t('Show All')}</div>
+								</button>
+
+								<button
+									class="flex h-[1.6875rem] w-full cursor-pointer select-none items-center gap-2 rounded-xl bg-transparent px-2 text-[0.8125rem] hover:text-gray-900 dark:hover:text-gray-100"
+									type="button"
+									on:click={() => {
+										hideAllHandler();
+									}}
+								>
+									<EyeSlash className="size-3.5" />
+									<div class="flex items-center">{$i18n.t('Hide All')}</div>
+								</button>
+							</DropdownMenu>
+						</div>
+					</Dropdown>
 				</div>
 			</div>
-		{/each}
-	</div>
 
-	{#if $user?.role === 'admin'}
-		<div class=" flex justify-end w-full mb-3">
-			<div class="flex space-x-1">
-				<input
-					id="models-import-input"
-					bind:this={modelsImportInputElement}
-					bind:files={importFiles}
-					type="file"
-					accept=".json"
-					hidden
-					on:change={() => {
-						console.log(importFiles);
-
-						let reader = new FileReader();
-						reader.onload = async (event) => {
-							let savedModels = JSON.parse(event.target.result);
-							console.log(savedModels);
-
-							for (const model of savedModels) {
-								if (model?.info ?? false) {
-									if ($_models.find((m) => m.id === model.id)) {
-										await updateModelById(localStorage.token, model.id, model.info).catch(
-											(error) => {
-												return null;
-											}
-										);
-									} else {
-										await createNewModel(localStorage.token, model.info).catch((error) => {
-											return null;
-										});
-									}
-								}
-							}
-
-							await _models.set(await getModels(localStorage.token));
-							models = await getWorkspaceModels(localStorage.token);
-						};
-
-						reader.readAsText(importFiles[0]);
-					}}
-				/>
-
-				<button
-					class="flex text-xs items-center space-x-1 px-3 py-1.5 rounded-xl bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-200 transition"
-					on:click={() => {
-						modelsImportInputElement.click();
-					}}
-				>
-					<div class=" self-center mr-2 font-medium line-clamp-1">{$i18n.t('Import Models')}</div>
-
-					<div class=" self-center">
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 16 16"
-							fill="currentColor"
-							class="w-3.5 h-3.5"
+			{#if models !== null}
+				{#if (models ?? []).length !== 0}
+					<!-- Previous labels retained for i18n extraction: {$i18n.t('Sort by')} -->
+					<div class="@container" id="model-list">
+						<div
+							class="grid grid-cols-[minmax(0,1fr)_9rem_8rem_9.5rem] items-center gap-x-4 px-2 @max-[48rem]:grid-cols-[minmax(0,1fr)_7rem_9.5rem] @max-[48rem]:gap-x-3 @max-[36rem]:grid-cols-[minmax(0,1fr)_9.5rem] @max-[36rem]:gap-x-2 min-h-6 text-xs text-gray-500 dark:text-gray-400"
 						>
-							<path
-								fill-rule="evenodd"
-								d="M4 2a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5V6.621a1.5 1.5 0 0 0-.44-1.06L9.94 2.439A1.5 1.5 0 0 0 8.878 2H4Zm4 9.5a.75.75 0 0 1-.75-.75V8.06l-.72.72a.75.75 0 0 1-1.06-1.06l2-2a.75.75 0 0 1 1.06 0l2 2a.75.75 0 1 1-1.06 1.06l-.72-.72v2.69a.75.75 0 0 1-.75.75Z"
-								clip-rule="evenodd"
-							/>
-						</svg>
-					</div>
-				</button>
+							<button
+								class="flex min-w-0 flex-1 items-center gap-1 py-0.5 text-left"
+								type="button"
+								on:click={() => setSortKey('name')}
+							>
+								{$i18n.t('Name')}
+								{#if sortKey === 'name'}
+									{#if sortDirection === 'asc'}
+										<ChevronUp className="size-2" />
+									{:else}
+										<ChevronDown className="size-2" />
+									{/if}
+								{/if}
+							</button>
 
-				<button
-					class="flex text-xs items-center space-x-1 px-3 py-1.5 rounded-xl bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-200 transition"
-					on:click={async () => {
-						downloadModels($_models);
-					}}
-				>
-					<div class=" self-center mr-2 font-medium line-clamp-1">{$i18n.t('Export Models')}</div>
+							<div class="@max-[48rem]:hidden">{$i18n.t('Owner')}</div>
 
-					<div class=" self-center">
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 16 16"
-							fill="currentColor"
-							class="w-3.5 h-3.5"
-						>
-							<path
-								fill-rule="evenodd"
-								d="M4 2a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5V6.621a1.5 1.5 0 0 0-.44-1.06L9.94 2.439A1.5 1.5 0 0 0 8.878 2H4Zm4 3.5a.75.75 0 0 1 .75.75v2.69l.72-.72a.75.75 0 1 1 1.06 1.06l-2 2a.75.75 0 0 1-1.06 0l-2-2a.75.75 0 0 1 1.06-1.06l.72.72V6.25A.75.75 0 0 1 8 5.5Z"
-								clip-rule="evenodd"
-							/>
-						</svg>
+							<button
+								class="@max-[36rem]:hidden flex min-w-0 items-center gap-1 py-0.5 text-left"
+								type="button"
+								on:click={() => setSortKey('updated_at')}
+							>
+								{$i18n.t('Updated at')}
+								{#if sortKey === 'updated_at'}
+									{#if sortDirection === 'asc'}
+										<ChevronUp className="size-2" />
+									{:else}
+										<ChevronDown className="size-2" />
+									{/if}
+								{/if}
+							</button>
+							<span class="sr-only">{$i18n.t('Actions')}</span>
+						</div>
+
+						<div class="grid gap-y-0.5">
+							{#each models as model (model.id)}
+								{@const localizedModelName = resolveLocalizedModelName(model, $i18n.language)}
+								<div
+									class="grid grid-cols-[minmax(0,1fr)_9rem_8rem_9.5rem] items-center gap-x-4 px-2 @max-[48rem]:grid-cols-[minmax(0,1fr)_7rem_9.5rem] @max-[48rem]:gap-x-3 @max-[36rem]:grid-cols-[minmax(0,1fr)_9.5rem] @max-[36rem]:gap-x-2 min-h-12 rounded-lg py-1.5 hover:bg-black/[0.03] dark:hover:bg-white/[0.03] group text-left {model.write_access
+										? 'cursor-pointer'
+										: ''} {model?.meta?.hidden ? 'opacity-50 dark:opacity-50' : ''}"
+									id="model-item-{model.id}"
+									role="presentation"
+									on:click={(e) => {
+										if (shouldIgnoreRowClick(e.target)) return;
+										openModel(model);
+									}}
+								>
+									<div class="flex min-w-0 items-center gap-2">
+										<div class="shrink-0 self-center">
+											<div
+												class="{model.is_active ? '' : 'opacity-50 dark:opacity-50'} bg-transparent"
+											>
+												<img
+													src={`${WEBUI_API_BASE_URL}/models/model/profile/image?id=${model.id}&lang=${$i18n.language}`}
+													alt=""
+													class="size-7 rounded-lg object-cover"
+													loading="lazy"
+													decoding="async"
+													on:error={(e) => {
+														// LICENSE covers this Open WebUI fallback logo.
+														// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+														// https://docs.openwebui.com/license.
+														e.target.src = '/favicon.png';
+													}}
+												/>
+											</div>
+										</div>
+										<div class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+											<div class="flex min-w-0 flex-1 flex-col overflow-hidden">
+												<div class="flex min-w-0 items-center gap-2 overflow-hidden">
+													<div class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+														<Tooltip content={model.id} className="min-w-0" placement="top-start">
+															{#if model.write_access}
+																<a
+																	href={`/workspace/models/edit?id=${encodeURIComponent(model.id)}`}
+																	class="focus-ring block truncate rounded text-[0.8125rem] leading-5 text-gray-800 group-hover:underline focus-visible:underline dark:text-gray-200"
+																	>{localizedModelName}</a
+																>
+															{:else}
+																<span
+																	class="block truncate text-[0.8125rem] leading-5 text-gray-800 dark:text-gray-200"
+																	>{localizedModelName}</span
+																>
+															{/if}
+														</Tooltip>
+														{#if !model.write_access}
+															<Badge type="subtle" content={$i18n.t('Read Only')} />
+														{/if}
+
+														<Tooltip
+															content={$i18n.t('Try in chat')}
+															className="-ml-0.5 h-5 w-4 shrink-0"
+															tippyOptions={{ trigger: 'mouseenter focusin' }}
+														>
+															<a
+																href={`/?model=${encodeURIComponent(model.id)}`}
+																aria-label={`${$i18n.t('Try in chat')}: ${localizedModelName}`}
+																class="focus-ring flex h-5 w-4 items-center justify-center rounded text-gray-400 hover:text-gray-700 dark:text-gray-500 dark:hover:text-gray-200"
+																><ArrowRight className="size-3 -rotate-45" strokeWidth="2" /></a
+															>
+														</Tooltip>
+													</div>
+												</div>
+
+												<div class="mt-0.5 min-w-0">
+													<Tooltip
+														content={(
+															resolveLocalizedModelDescription(model, $i18n.language) ?? ''
+														).trim() || $i18n.t('No description')}
+														className="min-w-0"
+														placement="top-start"
+													>
+														<div
+															class="truncate text-xs leading-4 text-gray-500 dark:text-gray-400"
+														>
+															{(
+																resolveLocalizedModelDescription(model, $i18n.language) ?? ''
+															).trim() || $i18n.t('No description')}
+														</div>
+													</Tooltip>
+												</div>
+											</div>
+										</div>
+									</div>
+
+									<div class="@max-[48rem]:hidden min-w-0 text-xs text-gray-600 dark:text-gray-400">
+										<ProfilePreview
+											user={model?.user ?? null}
+											side="bottom"
+											className="w-full min-w-0"
+										>
+											<span class="flex w-full min-w-0 items-center gap-2">
+												<ProfileImage
+													src={model?.user?.id
+														? `/api/v1/users/${model.user.id}/profile/image`
+														: '/user.png'}
+													className="size-5 shrink-0 rounded-full!"
+												/>
+												<span class="min-w-0 truncate">
+													{capitalizeFirstLetter(
+														model?.user?.name ?? model?.user?.email ?? $i18n.t('Deleted User')
+													)}
+												</span>
+											</span>
+										</ProfilePreview>
+									</div>
+									<Tooltip
+										content={dayjs(model.updated_at * 1000)
+											.locale($i18n.language)
+											.format('LLLL')}
+										className="@max-[36rem]:hidden min-w-0"
+									>
+										<span class="text-xs leading-5 text-gray-500 dark:text-gray-400"
+											>{dayjs(model.updated_at * 1000)
+												.locale($i18n.language)
+												.fromNow()}</span
+										>
+									</Tooltip>
+									<div class="flex min-w-0 items-center justify-end gap-1.5">
+										<div class="flex shrink-0 flex-row items-center gap-1.5 self-center">
+											{#if shiftKey && model.write_access}
+												<Tooltip content={model?.meta?.hidden ? $i18n.t('Show') : $i18n.t('Hide')}>
+													<button
+														class="flex size-6 items-center justify-center rounded-lg text-gray-400 transition dark:text-gray-500"
+														type="button"
+														aria-label={model?.meta?.hidden ? $i18n.t('Show') : $i18n.t('Hide')}
+														on:click={(e) => {
+															e.preventDefault();
+															e.stopPropagation();
+															hideModelHandler(model);
+														}}
+													>
+														{#if model?.meta?.hidden}
+															<EyeSlash className="size-4" />
+														{:else}
+															<Eye className="size-4" />
+														{/if}
+													</button>
+												</Tooltip>
+
+												<Tooltip content={$i18n.t('Delete')}>
+													<button
+														class="flex size-6 items-center justify-center rounded-lg text-gray-400 transition dark:text-gray-500"
+														type="button"
+														aria-label={$i18n.t('Delete')}
+														on:click={(e) => {
+															e.preventDefault();
+															e.stopPropagation();
+															confirmDeleteModel(model);
+														}}
+													>
+														<GarbageBin className="size-4" />
+													</button>
+												</Tooltip>
+											{:else}
+												<div class="flex shrink-0 flex-row items-center gap-1.5 self-center">
+													<CommentButton
+														onComment={(request) => (comments = request)}
+														modal
+														className="flex size-6 shrink-0 items-center justify-center rounded-lg text-gray-400 transition dark:text-gray-500"
+														resource={{ resource_type: 'model', resource_id: model.id }}
+													/>
+													<ModelMenu
+														onComment={(request) => (comments = request)}
+														accessHandler={$user?.permissions?.sharing?.models ||
+														$user?.role === 'admin'
+															? () => accessModal.open(model.id)
+															: null}
+														user={$user}
+														{model}
+														writeAccess={model.write_access}
+														editHandler={() => {
+															goto(`/workspace/models/edit?id=${encodeURIComponent(model.id)}`);
+														}}
+														shareHandler={() => {
+															shareModelHandler(model);
+														}}
+														cloneHandler={() => {
+															cloneModelHandler(model);
+														}}
+														exportHandler={() => {
+															exportModelHandler(model);
+														}}
+														hideHandler={() => {
+															hideModelHandler(model);
+														}}
+														pinModelHandler={() => {
+															pinModelHandler(model.id);
+														}}
+														copyLinkHandler={() => {
+															copyLinkHandler(model);
+														}}
+														deleteHandler={() => {
+															confirmDeleteModel(model);
+														}}
+														onClose={() => {}}
+													>
+														<div
+															class="flex size-6 items-center justify-center rounded-lg text-gray-400 transition dark:text-gray-500"
+														>
+															<EllipsisHorizontal className="size-4" />
+														</div>
+													</ModelMenu>
+
+													{#if model.write_access}
+														<Tooltip
+															content={updatingModels[model.id]
+																? $i18n.t('Saving...')
+																: model.is_active
+																	? $i18n.t('Enabled')
+																	: $i18n.t('Disabled')}
+														>
+															<Switch
+																bind:state={model.is_active}
+																disabled={updatingModels[model.id] ?? false}
+																ariaLabel={`${$i18n.t('Enabled')}: ${localizedModelName}`}
+																on:change={() => toggleModelHandler(model)}
+															/>
+														</Tooltip>
+													{:else}
+														<Switch
+															state={model.is_active}
+															disabled
+															tooltip={$i18n.t('Read Only')}
+															ariaLabel={`${$i18n.t('Enabled')}: ${localizedModelName}`}
+														/>
+													{/if}
+												</div>
+											{/if}
+										</div>
+									</div>
+								</div>
+							{/each}
+						</div>
 					</div>
-				</button>
-			</div>
+
+					{#if total > 30}
+						<Pagination bind:page count={total} perPage={30} />
+					{/if}
+				{:else}
+					<div class="flex w-full flex-col items-center justify-center py-16 pb-24">
+						<div class="max-w-sm text-center text-gray-900 dark:text-gray-100">
+							<div class="mb-1.5 text-sm">
+								{hasFilters ? $i18n.t('No models found') : $i18n.t('No models yet')}
+							</div>
+							<div class="text-center text-xs leading-5 text-gray-500">
+								{hasFilters
+									? $i18n.t('Try adjusting your search or filter to find what you are looking for.')
+									: $i18n.t('Items you create or that are shared with you will appear here.')}
+							</div>
+						</div>
+					</div>
+				{/if}
+			{:else}
+				<div class="w-full h-full flex justify-center items-center py-10">
+					<Spinner className="size-4" />
+				</div>
+			{/if}
+		</div>
+
+		{#if $config?.features.enable_community_sharing}
+			<CommunityDiscover
+				href="https://openwebui.com/search?type=model"
+				title={$i18n.t('Discover a model')}
+				description={$i18n.t('Discover, download, and explore model presets')}
+			/>
+		{/if}
+	{:else}
+		<div class="w-full h-full flex justify-center items-center">
+			<Spinner className="size-5" />
 		</div>
 	{/if}
-
-	{#if $config?.features.enable_community_sharing}
-		<div class=" my-16">
-			<div class=" text-xl font-medium mb-1 line-clamp-1">
-				{$i18n.t('Made by OpenWebUI Community')}
-			</div>
-
-			<a
-				class=" flex cursor-pointer items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-850 w-full mb-2 px-3.5 py-1.5 rounded-xl transition"
-				href="https://openwebui.com/#open-webui-community"
-				target="_blank"
-			>
-				<div class=" self-center">
-					<div class=" font-semibold line-clamp-1">{$i18n.t('Discover a model')}</div>
-					<div class=" text-sm line-clamp-1">
-						{$i18n.t('Discover, download, and explore model presets')}
-					</div>
-				</div>
-
-				<div>
-					<div>
-						<ChevronRight />
-					</div>
-				</div>
-			</a>
-		</div>
-	{/if}
-{:else}
-	<div class="w-full h-full flex justify-center items-center">
-		<Spinner />
-	</div>
-{/if}
+</Comments>

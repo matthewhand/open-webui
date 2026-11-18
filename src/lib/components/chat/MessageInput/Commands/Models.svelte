@@ -1,45 +1,52 @@
 <script lang="ts">
 	import Fuse from 'fuse.js';
 
-	import { createEventDispatcher, onMount } from 'svelte';
+	import { createEventDispatcher, onDestroy, onMount } from 'svelte';
 	import { tick, getContext } from 'svelte';
 
-	import { models } from '$lib/stores';
+	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';
+	import Tooltip from '$lib/components/common/Tooltip.svelte';
+	import {
+		resolveLocalizedModelDescription,
+		resolveLocalizedModelName
+	} from '$lib/utils/localizedContent';
+	import { getChatContext } from '$lib/components/chat/context';
 
-	const i18n = getContext('i18n');
+	const { models } = getChatContext();
 
-	const dispatch = createEventDispatcher();
+	const i18n = getContext<typeof import('$lib/i18n').default>('i18n');
 
-	export let command = '';
+	export let query = '';
+	export let onSelect = (e) => {};
 
 	let selectedIdx = 0;
-	let filteredItems = [];
+	export let filteredItems = [];
 
-	let fuse = new Fuse(
+	$: fuse = new Fuse(
 		$models
 			.filter((model) => !model?.info?.meta?.hidden)
 			.map((model) => {
 				const _item = {
 					...model,
-					modelName: model?.name,
+					modelName: resolveLocalizedModelName(model, $i18n.language),
 					tags: model?.info?.meta?.tags?.map((tag) => tag.name).join(' '),
-					desc: model?.info?.meta?.description
+					desc: resolveLocalizedModelDescription(model, $i18n.language)
 				};
 				return _item;
 			}),
 		{
 			keys: ['value', 'tags', 'modelName'],
-			threshold: 0.3
+			threshold: 0.5
 		}
 	);
 
-	$: filteredItems = command.slice(1)
-		? fuse.search(command).map((e) => {
+	$: filteredItems = query
+		? fuse.search(query).map((e) => {
 				return e.item;
 			})
 		: $models.filter((model) => !model?.info?.meta?.hidden);
 
-	$: if (command) {
+	$: if (query) {
 		selectedIdx = 0;
 	}
 
@@ -51,56 +58,53 @@
 		selectedIdx = Math.min(selectedIdx + 1, filteredItems.length - 1);
 	};
 
-	const confirmSelect = async (model) => {
-		command = '';
-		dispatch('select', model);
+	export const select = async () => {
+		const model = filteredItems[selectedIdx];
+		if (model) {
+			onSelect({ type: 'model', data: model });
+		}
 	};
-
-	onMount(async () => {
-		await tick();
-		const chatInputElement = document.getElementById('chat-input');
-		await tick();
-		chatInputElement?.focus();
-		await tick();
-	});
 </script>
 
+<div class="px-2 py-1 text-[0.6875rem] text-gray-500 dark:text-gray-400">
+	{$i18n.t('Models')}
+</div>
+
 {#if filteredItems.length > 0}
-	<div
-		id="commands-container"
-		class="pl-3 pr-14 mb-3 text-left w-full absolute bottom-0 left-0 right-0 z-10"
-	>
-		<div class="flex w-full rounded-xl border border-gray-50 dark:border-gray-850">
-			<div
-				class="max-h-60 flex flex-col w-full rounded-xl bg-white dark:bg-gray-900 dark:text-gray-100"
+	{#each filteredItems as model, modelIdx}
+		<Tooltip content={model.id} placement="top-start">
+			<button
+				class="flex h-[1.6875rem] w-full items-center rounded-xl px-2 text-left text-[0.8125rem] hover:bg-gray-50/40 dark:hover:bg-gray-800/40 {modelIdx ===
+				selectedIdx
+					? 'bg-gray-50/40 dark:bg-gray-800/40 selected-command-option-button'
+					: ''}"
+				type="button"
+				on:click={() => {
+					onSelect({ type: 'model', data: model });
+				}}
+				on:mousemove={() => {
+					selectedIdx = modelIdx;
+				}}
+				on:focus={() => {}}
+				data-selected={modelIdx === selectedIdx}
 			>
-				<div class="m-1 overflow-y-auto p-1 rounded-r-lg space-y-0.5 scrollbar-hidden">
-					{#each filteredItems as model, modelIdx}
-						<button
-							class="px-3 py-1.5 rounded-xl w-full text-left {modelIdx === selectedIdx
-								? 'bg-gray-50 dark:bg-gray-850 selected-command-option-button'
-								: ''}"
-							type="button"
-							on:click={() => {
-								confirmSelect(model);
-							}}
-							on:mousemove={() => {
-								selectedIdx = modelIdx;
-							}}
-							on:focus={() => {}}
-						>
-							<div class="flex font-medium text-black dark:text-gray-100 line-clamp-1">
-								<img
-									src={model?.info?.meta?.profile_image_url ?? '/static/favicon.png'}
-									alt={model?.name ?? model.id}
-									class="rounded-full size-6 items-center mr-2"
-								/>
-								{model.name}
-							</div>
-						</button>
-					{/each}
+				<div class="flex min-w-0 items-center text-black dark:text-gray-100">
+					<img
+						src={`${WEBUI_API_BASE_URL}/models/model/profile/image?id=${model.id}&lang=${$i18n.language}`}
+						alt={resolveLocalizedModelName(model, $i18n.language) ?? model.id}
+						class="mr-2 size-4.5 rounded-full object-cover"
+						on:error={(e) => {
+							// LICENSE covers this Open WebUI fallback logo.
+							// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+							// https://docs.openwebui.com/license.
+							e.currentTarget.src = '/favicon.png';
+						}}
+					/>
+					<div class="min-w-0 truncate">
+						{resolveLocalizedModelName(model, $i18n.language)}
+					</div>
 				</div>
-			</div>
-		</div>
-	</div>
+			</button>
+		</Tooltip>
+	{/each}
 {/if}

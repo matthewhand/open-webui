@@ -1,5 +1,8 @@
 <script>
-	import Settings from '$lib/components/admin/Settings.svelte';
-</script>
+	import { goto } from '$app/navigation';
+	import { onMount } from 'svelte';
 
-<Settings />
+	onMount(() => {
+		goto('/?settings=admin%3Ageneral', { replaceState: true });
+	});
+</script>

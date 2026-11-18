@@ -1,70 +1,121 @@
 <script lang="ts">
-	import { DropdownMenu } from 'bits-ui';
-	import { flyAndScale } from '$lib/utils/transitions';
 	import { getContext, createEventDispatcher } from 'svelte';
 
-	const i18n = getContext('i18n');
+	const i18n = getContext<typeof import('$lib/i18n').default>('i18n');
 	const dispatch = createEventDispatcher();
 
+	import { user } from '$lib/stores';
+
 	import Dropdown from '$lib/components/common/Dropdown.svelte';
-	import GarbageBin from '$lib/components/icons/GarbageBin.svelte';
-	import Pencil from '$lib/components/icons/Pencil.svelte';
+	import DropdownMenu from '$lib/components/common/DropdownMenu.svelte';
+	import EditPencil from '../icons/EditPencil.svelte';
+	import FolderIcon from '../icons/Folder.svelte';
+	import TrashIcon from '../icons/Trash.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import Download from '$lib/components/icons/Download.svelte';
+	import Download from '../icons/Download.svelte';
+	import CheckIcon from '$lib/components/icons/Check.svelte';
+	import ShareIcon from '../icons/Share.svelte';
+
+	export let align: 'start' | 'end' = 'start';
+	export let onNewChat = () => {};
+	export let onEdit = () => {};
+	export let onExport = () => {};
+	export let onDelete = () => {};
+	export let onCreateSubFolder = () => {};
+	export let onMarkAllRead = () => {};
+	/** Shown only when the caller allows sharing this folder. */
+	export let onShare: (() => void) | null = null;
 
 	let show = false;
 </script>
 
 <Dropdown
+	closeOnSelect
 	bind:show
-	on:change={(e) => {
-		if (e.detail === false) {
+	{align}
+	onOpenChange={(state) => {
+		if (state === false) {
 			dispatch('close');
 		}
 	}}
 >
 	<Tooltip content={$i18n.t('More')}>
-		<slot />
+		<button
+			aria-label={$i18n.t('Folder options')}
+			on:click={(e) => {
+				e.stopPropagation();
+				show = !show;
+			}}
+		>
+			<slot />
+		</button>
 	</Tooltip>
 
 	<div slot="content">
-		<DropdownMenu.Content
-			class="w-full max-w-[160px] rounded-lg px-1 py-1.5  z-50 bg-white dark:bg-gray-850 dark:text-white shadow-lg"
-			sideOffset={-2}
-			side="bottom"
-			align="start"
-			transition={flyAndScale}
-		>
-			<DropdownMenu.Item
-				class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-md"
-				on:click={() => {
-					dispatch('rename');
-				}}
+		<!-- Grouped: create, manage the folder, read state, then delete on its own. -->
+		<DropdownMenu className="min-w-[10.625rem]">
+			<button
+				class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
+				on:click={onNewChat}
 			>
-				<Pencil strokeWidth="2" />
-				<div class="flex items-center">{$i18n.t('Rename')}</div>
-			</DropdownMenu.Item>
-
-			<DropdownMenu.Item
-				class="flex gap-2 items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-md"
-				on:click={() => {
-					dispatch('export');
-				}}
+				<EditPencil className="size-3.5" />
+				<div class="flex items-center">{$i18n.t('New Chat')}</div>
+			</button>
+			<button
+				class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
+				on:click={() => onCreateSubFolder()}
 			>
-				<Download strokeWidth="2" />
+				<FolderIcon className="size-3.5" />
+				<div class="flex items-center">{$i18n.t('Create Folder')}</div>
+			</button>
 
-				<div class="flex items-center">{$i18n.t('Export')}</div>
-			</DropdownMenu.Item>
+			<hr class="border-gray-50/30 dark:border-gray-800/30 mx-1 my-0.5" />
 
-			<DropdownMenu.Item
-				class="flex  gap-2  items-center px-3 py-1.5 text-sm  cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-800 rounded-md"
-				on:click={() => {
-					dispatch('delete');
-				}}
+			<button
+				class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
+				on:click={() => onEdit()}
 			>
-				<GarbageBin strokeWidth="2" />
+				<EditPencil className="size-3.5" />
+				<div class="flex items-center">{$i18n.t('Edit')}</div>
+			</button>
+			{#if onShare}
+				<button
+					class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
+					on:click={() => onShare?.()}
+				>
+					<ShareIcon className="size-3.5" strokeWidth="1.5" />
+					<div class="flex items-center">{$i18n.t('Share')}</div>
+				</button>
+			{/if}
+			{#if $user?.role === 'admin' || ($user?.permissions?.chat?.export ?? true)}
+				<button
+					class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
+					on:click={() => onExport()}
+				>
+					<Download className="size-3.5" />
+					<div class="flex items-center">{$i18n.t('Export')}</div>
+				</button>
+			{/if}
+
+			<hr class="border-gray-50/30 dark:border-gray-800/30 mx-1 my-0.5" />
+
+			<button
+				class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
+				on:click={() => onMarkAllRead()}
+			>
+				<CheckIcon className="size-3.5" />
+				<div class="flex items-center">{$i18n.t('Mark all as read')}</div>
+			</button>
+
+			<hr class="border-gray-50/30 dark:border-gray-800/30 mx-1 my-0.5" />
+
+			<button
+				class="flex h-[1.6875rem] w-full items-center gap-2 rounded-xl px-2 text-[0.8125rem] select-none cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-900"
+				on:click={() => onDelete()}
+			>
+				<TrashIcon className="size-3.5" />
 				<div class="flex items-center">{$i18n.t('Delete')}</div>
-			</DropdownMenu.Item>
-		</DropdownMenu.Content>
+			</button>
+		</DropdownMenu>
 	</div>
 </Dropdown>

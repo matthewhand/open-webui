@@ -1,90 +1,180 @@
+<script context="module">
+	/** @typedef {{ id: string, name: string, parent_group_id?: string | null, path: string, ancestor_ids: string[], data?: { config?: { default_models?: string[] | null } } }} GroupListItem */
+</script>
+
 <script>
 	import { toast } from 'svelte-sonner';
-	import dayjs from 'dayjs';
-	import relativeTime from 'dayjs/plugin/relativeTime';
-	dayjs.extend(relativeTime);
-
 	import { onMount, getContext } from 'svelte';
 	import { goto } from '$app/navigation';
 
-	import { WEBUI_NAME, config, user, showSidebar, knowledge } from '$lib/stores';
-	import { WEBUI_BASE_URL } from '$lib/constants';
+	import { adminGroupCount, user } from '$lib/stores';
 
-	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import Plus from '$lib/components/icons/Plus.svelte';
-	import Badge from '$lib/components/common/Badge.svelte';
-	import UsersSolid from '$lib/components/icons/UsersSolid.svelte';
-	import ChevronRight from '$lib/components/icons/ChevronRight.svelte';
-	import EllipsisHorizontal from '$lib/components/icons/EllipsisHorizontal.svelte';
-	import User from '$lib/components/icons/User.svelte';
-	import UserCircleSolid from '$lib/components/icons/UserCircleSolid.svelte';
-	import GroupModal from './Groups/EditGroupModal.svelte';
-	import Pencil from '$lib/components/icons/Pencil.svelte';
+	import Search from '$lib/components/icons/Search.svelte';
+	import EditGroupModal from './Groups/EditGroupModal.svelte';
 	import GroupItem from './Groups/GroupItem.svelte';
-	import AddGroupModal from './Groups/AddGroupModal.svelte';
-	import { createNewGroup, getGroups } from '$lib/apis/groups';
+	import XMark from '$lib/components/icons/XMark.svelte';
+	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
+	import Check from '$lib/components/icons/Check.svelte';
+	import ChevronRight from '$lib/components/icons/ChevronRight.svelte';
+	import Select from '$lib/components/common/Select.svelte';
+	import { createNewGroup, getGroups, updateGroupById } from '$lib/apis/groups';
 	import { getUserDefaultPermissions, updateUserDefaultPermissions } from '$lib/apis/users';
 
+	/** @type {import('svelte/store').Writable<import('i18next').i18n>} */
 	const i18n = getContext('i18n');
 
 	let loaded = false;
 
-	export let users = [];
-
+	/** @type {any[]} */
 	let groups = [];
-	let filteredGroups;
 
-	$: filteredGroups = groups.filter((user) => {
-		if (search === '') {
-			return true;
-		} else {
-			let name = user.name.toLowerCase();
-			const query = search.toLowerCase();
-			return name.includes(query);
+	let query = '';
+	let sortBy = 'name';
+	let collapsed = new Set();
+	/** @type {any} */
+	let draggedGroup = null;
+	let dropTarget = '';
+	let moving = false;
+
+	$: sortItems = [
+		{ value: 'members', label: $i18n.t('Members') },
+		{ value: 'name', label: $i18n.t('Name') }
+	];
+
+	/** @type {any[]} */
+	let filteredGroups = [];
+	/** @type {Map<string | null, any[]>} */
+	let children = new Map();
+	$: {
+		children = new Map();
+		for (const group of groups) {
+			const parent = group.parent_group_id ?? null;
+			children.set(parent, [...(children.get(parent) ?? []), group]);
 		}
-	});
+		for (const siblings of children.values()) {
+			siblings.sort((a, b) =>
+				sortBy === 'members'
+					? (b.member_count ?? 0) - (a.member_count ?? 0) || a.name.localeCompare(b.name)
+					: a.name.localeCompare(b.name)
+			);
+		}
+		const matching = new Set();
+		for (const group of groups) {
+			if (group.path.toLowerCase().includes(query.toLowerCase())) {
+				matching.add(group.id);
+				for (const id of group.ancestor_ids) matching.add(id);
+			}
+		}
+		const visible = [];
+		const pending = [...(children.get(null) ?? [])].reverse();
+		while (pending.length) {
+			const group = pending.pop();
+			if (!matching.has(group.id)) continue;
+			visible.push(group);
+			if (query || !collapsed.has(group.id)) {
+				pending.push(...[...(children.get(group.id) ?? [])].reverse());
+			}
+		}
+		filteredGroups = visible;
+	}
 
-	let search = '';
-	let defaultPermissions = {
-		workspace: {
-			models: false,
-			knowledge: false,
-			prompts: false,
-			tools: false
-		},
-		chat: {
-			file_upload: true,
-			delete: true,
-			edit: true,
-			temporary: true
+	/** @param {string | null} parentId */
+	const canDrop = (parentId) => {
+		const parent = groups.find((group) => group.id === parentId);
+		return (
+			draggedGroup &&
+			!moving &&
+			(draggedGroup.parent_group_id ?? null) !== parentId &&
+			draggedGroup.id !== parentId &&
+			!parent?.ancestor_ids.includes(draggedGroup.id)
+		);
+	};
+
+	/** @param {string | null} parentId */
+	const moveGroup = async (parentId) => {
+		if (!canDrop(parentId)) return;
+		const group = draggedGroup;
+		draggedGroup = null;
+		dropTarget = '';
+		moving = true;
+		try {
+			await updateGroupById(localStorage.token, group.id, {
+				name: group.name,
+				description: group.description,
+				parent_group_id: parentId
+			});
+			collapsed.delete(parentId);
+			collapsed = new Set(collapsed);
+			await setGroups();
+			toast.success($i18n.t('Group moved successfully'));
+		} catch (error) {
+			toast.error(String(error));
+		} finally {
+			moving = false;
 		}
 	};
 
-	let showCreateGroupModal = false;
+	$: if (loaded) {
+		adminGroupCount.set(
+			groups.filter((group) => group.path.toLowerCase().includes(query.toLowerCase())).length
+		);
+	}
+
+	/** @type {any} */
+	let defaultPermissions = {};
+
+	let showAddGroupModal = false;
 	let showDefaultPermissionsModal = false;
 
 	const setGroups = async () => {
-		groups = await getGroups(localStorage.token);
+		/** @type {any[]} */
+		const result = await getGroups(localStorage.token);
+		const byId = new Map(result.map((group) => [group.id, group]));
+		groups = result.map((group) => {
+			const ancestors = [];
+			const seen = new Set([group.id]);
+			let parent = byId.get(group.parent_group_id);
+			while (parent && !seen.has(parent.id)) {
+				seen.add(parent.id);
+				ancestors.unshift(parent);
+				parent = byId.get(parent.parent_group_id);
+			}
+			return {
+				...group,
+				path: [...ancestors, group].map((item) => item.name).join(' / '),
+				ancestor_ids: ancestors.map((item) => item.id)
+			};
+		});
 	};
 
+	/** @param {any} updatedGroup */
+	const updateGroup = (updatedGroup) => {
+		groups = groups.map((group) =>
+			group.id === updatedGroup.id ? { ...group, ...updatedGroup } : group
+		);
+	};
+
+	/** @param {any} group */
 	const addGroupHandler = async (group) => {
 		const res = await createNewGroup(localStorage.token, group).catch((error) => {
-			toast.error(error);
+			toast.error(`${error}`);
 			return null;
 		});
 
 		if (res) {
 			toast.success($i18n.t('Group created successfully'));
-			groups = await getGroups(localStorage.token);
+			await setGroups();
 		}
+		return !!res;
 	};
 
+	/** @param {any} group */
 	const updateDefaultPermissionsHandler = async (group) => {
-		console.log(group.permissions);
+		console.debug(group.permissions);
 
 		const res = await updateUserDefaultPermissions(localStorage.token, group.permissions).catch(
 			(error) => {
-				toast.error(error);
+				toast.error(`${error}`);
 				return null;
 			}
 		);
@@ -93,145 +183,246 @@
 			toast.success($i18n.t('Default permissions updated successfully'));
 			defaultPermissions = await getUserDefaultPermissions(localStorage.token);
 		}
+		return !!res;
 	};
 
 	onMount(async () => {
 		if ($user?.role !== 'admin') {
 			await goto('/');
-		} else {
-			await setGroups();
-			defaultPermissions = await getUserDefaultPermissions(localStorage.token);
+			return;
 		}
+
+		defaultPermissions = await getUserDefaultPermissions(localStorage.token);
+		await setGroups();
 		loaded = true;
 	});
 </script>
 
 {#if loaded}
-	<AddGroupModal bind:show={showCreateGroupModal} onSubmit={addGroupHandler} />
-	<div class="mt-0.5 mb-2 gap-1 flex flex-col md:flex-row justify-between">
-		<div class="flex md:self-center text-lg font-medium px-0.5">
-			{$i18n.t('Groups')}
-			<div class="flex self-center w-[1px] h-6 mx-2.5 bg-gray-50 dark:bg-gray-850" />
-
-			<span class="text-lg font-medium text-gray-500 dark:text-gray-300">{groups.length}</span>
-		</div>
-
-		<div class="flex gap-1">
-			<div class=" flex w-full space-x-2">
-				<div class="flex flex-1">
-					<div class=" self-center ml-1 mr-3">
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 20 20"
-							fill="currentColor"
-							class="w-4 h-4"
-						>
-							<path
-								fill-rule="evenodd"
-								d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
-								clip-rule="evenodd"
-							/>
-						</svg>
-					</div>
-					<input
-						class=" w-full text-sm pr-4 py-1 rounded-r-xl outline-none bg-transparent"
-						bind:value={search}
-						placeholder={$i18n.t('Search')}
-					/>
-				</div>
-
-				<div>
-					<Tooltip content={$i18n.t('Create Group')}>
-						<button
-							class=" p-2 rounded-xl hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-850 transition font-medium text-sm flex items-center space-x-1"
-							on:click={() => {
-								showCreateGroupModal = !showCreateGroupModal;
-							}}
-						>
-							<Plus className="size-3.5" />
-						</button>
-					</Tooltip>
-				</div>
-			</div>
-		</div>
-	</div>
+	{#if showAddGroupModal}
+		<EditGroupModal
+			bind:show={showAddGroupModal}
+			edit={false}
+			tabs={['general', 'permissions']}
+			permissions={defaultPermissions}
+			{groups}
+			onSubmit={addGroupHandler}
+		/>
+	{/if}
 
 	<div>
-		{#if filteredGroups.length === 0}
-			<div class="flex flex-col items-center justify-center h-40">
-				<div class=" text-xl font-medium">
-					{$i18n.t('Organize your users')}
+		<div class="sticky top-0 z-10 bg-white dark:bg-gray-900">
+			<div class="flex h-8 flex-1 items-center w-full gap-2">
+				<div class="flex min-w-0 flex-1 items-center">
+					<div class="self-center ml-1 mr-3">
+						<Search className="size-3.5" />
+					</div>
+					<input
+						class="w-full text-sm pr-4 py-1 rounded-r-xl outline-hidden bg-transparent"
+						bind:value={query}
+						aria-label={$i18n.t('Search Groups')}
+						placeholder={$i18n.t('Search Groups')}
+					/>
+					{#if query}
+						<div class="self-center pl-1.5 translate-y-[0.5px] rounded-l-xl bg-transparent">
+							<button
+								class="py-0.5 rounded-full transition hover:text-gray-900 dark:hover:text-gray-100 text-gray-500 dark:text-gray-400 px-0"
+								aria-label={$i18n.t('Clear search')}
+								on:click={() => {
+									query = '';
+								}}
+							>
+								<XMark className="size-3" strokeWidth="2" />
+							</button>
+						</div>
+					{/if}
 				</div>
 
-				<div class="mt-1 text-sm dark:text-gray-300">
-					{$i18n.t('Use groups to group your users and assign permissions.')}
-				</div>
+				<Select
+					bind:value={sortBy}
+					items={sortItems}
+					placeholder={$i18n.t('Sort')}
+					triggerClass="relative h-8 shrink-0 flex items-center gap-1 px-1.5 py-1.5 bg-transparent rounded-xl text-[0.8125rem] font-normal text-gray-700 transition hover:text-gray-900 dark:text-gray-200 dark:hover:text-gray-100"
+					labelClass="inline-flex h-input outline-hidden bg-transparent truncate placeholder-gray-400 focus:outline-hidden"
+					align="end"
+				>
+					<svelte:fragment slot="trigger" let:selectedLabel>
+						<span
+							class="inline-flex h-input outline-hidden bg-transparent truncate placeholder-gray-400 focus:outline-hidden"
+						>
+							{selectedLabel}
+						</span>
+						<ChevronDown className="size-3.5" strokeWidth="2.5" />
+					</svelte:fragment>
 
-				<div class="mt-3">
-					<button
-						class=" px-4 py-1.5 text-sm rounded-full bg-black hover:bg-gray-800 text-white dark:bg-white dark:text-black dark:hover:bg-gray-100 transition font-medium flex items-center space-x-1"
-						aria-label={$i18n.t('Create Group')}
-						on:click={() => {
-							showCreateGroupModal = true;
-						}}
-					>
-						{$i18n.t('Create Group')}
-					</button>
-				</div>
+					<svelte:fragment slot="item" let:item let:selected>
+						{item.label}
+						<div class="ml-auto {selected ? '' : 'invisible'}">
+							<Check />
+						</div>
+					</svelte:fragment>
+				</Select>
+
+				<button
+					class="ml-1 shrink-0 rounded-lg bg-gray-50 px-2.5 py-1 text-xs text-gray-900 transition ring-1 ring-gray-200 hover:bg-gray-100 dark:bg-gray-850 dark:text-gray-100 dark:ring-gray-800 dark:hover:bg-gray-800"
+					on:click={() => {
+						showAddGroupModal = !showAddGroupModal;
+					}}
+				>
+					{$i18n.t('New Group')}
+				</button>
 			</div>
-		{:else}
-			<div>
-				<div class=" flex items-center gap-3 justify-between text-xs uppercase px-1 font-bold">
-					<div class="w-full">Group</div>
+		</div>
 
-					<div class="w-full">Users</div>
-
-					<div class="w-full"></div>
-				</div>
-
-				<hr class="mt-1.5 border-gray-50 dark:border-gray-850" />
-
-				{#each filteredGroups as group}
-					<div class="my-2">
-						<GroupItem {group} {users} {setGroups} />
+		{#if filteredGroups.length !== 0}
+			<div class="mt-2" aria-label={$i18n.t('Group hierarchy')}>
+				{#each filteredGroups as group (group.id)}
+					<div
+						role="group"
+						aria-label={group.name}
+						class="relative flex items-center rounded-xl transition {dropTarget === group.id
+							? 'bg-gray-100/40 dark:bg-gray-800/30'
+							: 'hover:bg-gray-50/60 dark:hover:bg-gray-900'} {draggedGroup?.id === group.id
+							? 'opacity-40'
+							: ''}"
+						style:padding-left={`${Math.min(group.ancestor_ids.length, 8) * 20}px`}
+						on:dragover={(event) => {
+							if (canDrop(group.id)) {
+								event.preventDefault();
+								if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+								dropTarget = group.id;
+							}
+						}}
+						on:dragleave={(event) => {
+							if (
+								!(event.relatedTarget instanceof Node) ||
+								!event.currentTarget.contains(event.relatedTarget)
+							)
+								dropTarget = '';
+						}}
+						on:drop|preventDefault={() => moveGroup(group.id)}
+					>
+						{#each group.ancestor_ids.slice(0, 8) as ancestorId, depth}
+							<span
+								aria-hidden="true"
+								class="pointer-events-none absolute top-0 bottom-0 border-l border-gray-100 dark:border-gray-900"
+								style:left={`${depth * 20 + 11}px`}
+							></span>
+						{/each}
+						{#if children.has(group.id)}
+							<button
+								type="button"
+								class="z-10 flex size-6 shrink-0 items-center justify-center rounded-md text-gray-500 hover:text-gray-900 dark:hover:text-gray-100"
+								aria-label={collapsed.has(group.id)
+									? $i18n.t('Expand {{name}}', { name: group.name })
+									: $i18n.t('Collapse {{name}}', { name: group.name })}
+								aria-expanded={!!query || !collapsed.has(group.id)}
+								on:click={() => {
+									collapsed.has(group.id) ? collapsed.delete(group.id) : collapsed.add(group.id);
+									collapsed = new Set(collapsed);
+								}}
+							>
+								<div
+									class="transition-transform"
+									class:rotate-90={!!query || !collapsed.has(group.id)}
+								>
+									<ChevronRight className="size-3.5" />
+								</div>
+							</button>
+						{:else}<span class="w-6 shrink-0"></span>{/if}
+						<div class="min-w-0 flex-1">
+							<GroupItem
+								{group}
+								{groups}
+								{setGroups}
+								{updateGroup}
+								{defaultPermissions}
+								draggable={!moving}
+								onDragStart={(event) => {
+									if (!event.dataTransfer) return;
+									draggedGroup = group;
+									event.dataTransfer.effectAllowed = 'move';
+									event.dataTransfer.setData('text/plain', group.id);
+								}}
+								onDragEnd={() => {
+									draggedGroup = null;
+									dropTarget = '';
+								}}
+							/>
+						</div>
 					</div>
 				{/each}
+				{#if draggedGroup}
+					<div
+						role="region"
+						aria-label={$i18n.t('Move to top level')}
+						class="mt-1 rounded-lg px-3 py-2 text-xs transition {dropTarget === 'root'
+							? 'bg-gray-100/40 text-gray-500 dark:bg-gray-800/30 dark:text-gray-400'
+							: 'text-gray-400 dark:text-gray-500'}"
+						on:dragover={(event) => {
+							if (canDrop(null)) {
+								event.preventDefault();
+								dropTarget = 'root';
+							}
+						}}
+						on:dragleave={() => {
+							dropTarget = '';
+						}}
+						on:drop|preventDefault={() => moveGroup(null)}
+					>
+						{$i18n.t('Move to top level')}
+					</div>
+				{/if}
+			</div>
+		{:else}
+			<div class="flex w-full flex-col items-center justify-center py-16 pb-24">
+				<div class="max-w-sm text-center text-gray-900 dark:text-gray-100">
+					<div class="mb-1.5 text-sm">{$i18n.t('No groups found')}</div>
+					<div class="text-center text-xs leading-5 text-gray-500">
+						{$i18n.t('Use groups to organize your users and assign permissions.')}
+					</div>
+				</div>
 			</div>
 		{/if}
 
-		<hr class="mb-2 border-gray-50 dark:border-gray-850" />
-
-		<GroupModal
-			bind:show={showDefaultPermissionsModal}
-			tabs={['permissions']}
-			bind:permissions={defaultPermissions}
-			custom={false}
-			onSubmit={updateDefaultPermissionsHandler}
-		/>
+		<hr class="my-1 border-gray-50 dark:border-gray-850/40" />
 
 		<button
-			class="flex items-center justify-between rounded-lg w-full transition pt-1"
+			class="group flex cursor-pointer text-left w-full px-2.5 py-2"
+			aria-haspopup="dialog"
 			on:click={() => {
 				showDefaultPermissionsModal = true;
 			}}
 		>
-			<div class="flex items-center gap-2.5">
-				<div class="p-1.5 bg-black/5 dark:bg-white/10 rounded-full">
-					<UsersSolid className="size-4" />
-				</div>
+			<div class="w-full">
+				<div class="flex items-center gap-3">
+					<div class="flex min-w-0 flex-1 flex-col gap-0.5 pl-1">
+						<div class="text-sm font-normal text-gray-900 group-hover:underline dark:text-gray-100">
+							{$i18n.t('Default permissions')}
+						</div>
 
-				<div class="text-left">
-					<div class=" text-sm font-medium">{$i18n.t('Default permissions')}</div>
+						<div class="line-clamp-1 text-xs text-gray-500">
+							{$i18n.t('applies to all users with the "user" role')}
+						</div>
+					</div>
 
-					<div class="flex text-xs mt-0.5">
-						{$i18n.t('applies to all users with the "user" role')}
+					<div
+						class="shrink-0 px-1.5 text-xs text-gray-500 transition group-hover:text-gray-800 dark:text-gray-400 dark:group-hover:text-gray-200"
+					>
+						{$i18n.t('Edit')}
 					</div>
 				</div>
 			</div>
-
-			<div>
-				<ChevronRight strokeWidth="2.5" />
-			</div>
 		</button>
 	</div>
+
+	{#if showDefaultPermissionsModal}
+		<EditGroupModal
+			bind:show={showDefaultPermissionsModal}
+			tabs={['permissions']}
+			permissions={defaultPermissions}
+			custom={false}
+			onSubmit={updateDefaultPermissionsHandler}
+		/>
+	{/if}
 {/if}

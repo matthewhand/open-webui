@@ -4,6 +4,10 @@
 
 	export let state = 'unchecked';
 	export let indeterminate = false;
+	export let disabled = false;
+	export let ariaLabel = '';
+
+	export let disabledClassName = 'opacity-50 cursor-not-allowed';
 
 	let _state = 'unchecked';
 
@@ -11,11 +15,15 @@
 </script>
 
 <button
-	class=" outline -outline-offset-1 outline-[1.5px] outline-gray-200 dark:outline-gray-600 {state !==
+	class="focus-ring outline -outline-offset-1 outline-[1.5px] outline-gray-200 dark:outline-gray-600 {state !==
 	'unchecked'
 		? 'bg-black outline-black '
-		: 'hover:outline-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800'} text-white transition-all rounded inline-block w-3.5 h-3.5 relative"
+		: 'hover:outline-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800'} text-white transition-all rounded-sm inline-block w-3.5 h-3.5 relative {disabled
+		? disabledClassName
+		: ''}"
 	on:click={() => {
+		if (disabled) return;
+
 		if (_state === 'unchecked') {
 			_state = 'checked';
 			dispatch('change', _state);
@@ -30,6 +38,10 @@
 		}
 	}}
 	type="button"
+	role="checkbox"
+	aria-checked={indeterminate && _state !== 'checked' ? 'mixed' : _state === 'checked'}
+	aria-label={ariaLabel || undefined}
+	{disabled}
 >
 	<div class="top-0 left-0 absolute w-full flex justify-center">
 		{#if _state === 'checked'}

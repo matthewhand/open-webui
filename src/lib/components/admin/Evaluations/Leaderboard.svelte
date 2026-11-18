@@ -1,410 +1,275 @@
 <script lang="ts">
-	import * as ort from 'onnxruntime-web';
-	import { AutoModel, AutoTokenizer } from '@huggingface/transformers';
-
-	import { onMount, getContext } from 'svelte';
-	import { models } from '$lib/stores';
-
+	import { getContext } from 'svelte';
+	import { adminLeaderboardCount, models } from '$lib/stores';
+	import { getLeaderboard } from '$lib/apis/evaluations';
+	import ModelModal from './LeaderboardModal.svelte';
 	import Spinner from '$lib/components/common/Spinner.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
-	import MagnifyingGlass from '$lib/components/icons/MagnifyingGlass.svelte';
+	import Search from '$lib/components/icons/Search.svelte';
+	import XMark from '$lib/components/icons/XMark.svelte';
+	import ChevronUp from '$lib/components/icons/ChevronUp.svelte';
+	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
 
-	const i18n = getContext('i18n');
-
-	const EMBEDDING_MODEL = 'TaylorAI/bge-micro-v2';
-
-	let tokenizer = null;
-	let model = null;
-
-	export let feedbacks = [];
+	const i18n: any = getContext('i18n');
 
 	let rankedModels = [];
-
 	let query = '';
+	let loading = true;
+	let debounceTimer: ReturnType<typeof setTimeout>;
+	let orderBy = 'rating';
+	let direction: 'asc' | 'desc' = 'desc';
 
-	let tagEmbeddings = new Map();
-	let loadingLeaderboard = true;
-	let debounceTimer;
+	let showModal = false;
+	let selectedModel = null;
 
-	type Feedback = {
-		id: string;
-		data: {
-			rating: number;
-			model_id: string;
-			sibling_model_ids: string[] | null;
-			reason: string;
-			comment: string;
-			tags: string[];
-		};
-		user: {
-			name: string;
-			profile_image_url: string;
-		};
-		updated_at: number;
+	const toggleSort = (key: string) => {
+		if (orderBy === key) {
+			direction = direction === 'asc' ? 'desc' : 'asc';
+		} else {
+			orderBy = key;
+			direction = key === 'name' ? 'asc' : 'desc';
+		}
 	};
 
-	type ModelStats = {
-		rating: number;
-		won: number;
-		lost: number;
+	const openModal = (model) => {
+		selectedModel = model;
+		showModal = true;
 	};
 
-	//////////////////////
-	//
-	// Rank models by Elo rating
-	//
-	//////////////////////
+	const closeModal = () => {
+		selectedModel = null;
+		showModal = false;
+	};
 
-	const rankHandler = async (similarities: Map<string, number> = new Map()) => {
-		const modelStats = calculateModelStats(feedbacks, similarities);
+	const loadLeaderboard = async (searchQuery = '') => {
+		loading = true;
+		try {
+			const result = await getLeaderboard(localStorage.token, searchQuery);
+			const statsMap = new Map((result?.entries ?? []).map((e) => [e.model_id, e]));
+			const modelMap = new Map(($models ?? []).map((m) => [m.id, m]));
 
-		rankedModels = $models
-			.filter((m) => m?.owned_by !== 'arena' && (m?.info?.meta?.hidden ?? false) !== true)
-			.map((model) => {
-				const stats = modelStats.get(model.id);
-				return {
-					...model,
-					rating: stats ? Math.round(stats.rating) : '-',
+			const activeModels = $models
+				.filter((m) => m?.owned_by !== 'arena' && !m?.info?.meta?.hidden)
+				.map((model) => {
+					const s = statsMap.get(model.id);
+					return {
+						...model,
+						rating: s?.rating ?? '-',
+						stats: {
+							count: s ? s.won + s.lost : 0,
+							won: s?.won?.toString() ?? '-',
+							lost: s?.lost?.toString() ?? '-'
+						},
+						top_tags: s?.top_tags ?? []
+					};
+				});
+
+			const evaluatedModels = (result?.entries ?? [])
+				.filter((entry) => !modelMap.has(entry.model_id))
+				.map((entry) => ({
+					id: entry.model_id,
+					name: entry.model_id,
+					rating: entry.rating,
 					stats: {
-						count: stats ? stats.won + stats.lost : 0,
-						won: stats ? stats.won.toString() : '-',
-						lost: stats ? stats.lost.toString() : '-'
-					}
-				};
-			})
-			.sort((a, b) => {
-				if (a.rating === '-' && b.rating !== '-') return 1;
-				if (b.rating === '-' && a.rating !== '-') return -1;
-				if (a.rating !== '-' && b.rating !== '-') return b.rating - a.rating;
-				return a.name.localeCompare(b.name);
-			});
+						count: entry.won + entry.lost,
+						won: entry.won.toString(),
+						lost: entry.lost.toString()
+					},
+					top_tags: entry.top_tags ?? []
+				}));
 
-		loadingLeaderboard = false;
+			rankedModels = [...activeModels, ...evaluatedModels].sort((a, b) => {
+				if (a.rating === '-') return 1;
+				if (b.rating === '-') return -1;
+				return b.rating - a.rating;
+			});
+			adminLeaderboardCount.set(rankedModels.length);
+		} catch (err) {
+			console.error('Leaderboard load failed:', err);
+		}
+		loading = false;
 	};
 
-	function calculateModelStats(
-		feedbacks: Feedback[],
-		similarities: Map<string, number>
-	): Map<string, ModelStats> {
-		const stats = new Map<string, ModelStats>();
-		const K = 32;
+	const debouncedLoad = () => {
+		loading = true;
+		clearTimeout(debounceTimer);
+		debounceTimer = setTimeout(() => loadLeaderboard(query), 500);
+	};
 
-		function getOrDefaultStats(modelId: string): ModelStats {
-			return stats.get(modelId) || { rating: 1000, won: 0, lost: 0 };
-		}
-
-		function updateStats(modelId: string, ratingChange: number, outcome: number) {
-			const currentStats = getOrDefaultStats(modelId);
-			currentStats.rating += ratingChange;
-			if (outcome === 1) currentStats.won++;
-			else if (outcome === 0) currentStats.lost++;
-			stats.set(modelId, currentStats);
-		}
-
-		function calculateEloChange(
-			ratingA: number,
-			ratingB: number,
-			outcome: number,
-			similarity: number
-		): number {
-			const expectedScore = 1 / (1 + Math.pow(10, (ratingB - ratingA) / 400));
-			return K * (outcome - expectedScore) * similarity;
-		}
-
-		feedbacks.forEach((feedback) => {
-			const modelA = feedback.data.model_id;
-			const statsA = getOrDefaultStats(modelA);
-			let outcome: number;
-
-			switch (feedback.data.rating.toString()) {
-				case '1':
-					outcome = 1;
-					break;
-				case '-1':
-					outcome = 0;
-					break;
-				default:
-					return; // Skip invalid ratings
-			}
-
-			// If the query is empty, set similarity to 1, else get the similarity from the map
-			const similarity = query !== '' ? similarities.get(feedback.id) || 0 : 1;
-			const opponents = feedback.data.sibling_model_ids || [];
-
-			opponents.forEach((modelB) => {
-				const statsB = getOrDefaultStats(modelB);
-				const changeA = calculateEloChange(statsA.rating, statsB.rating, outcome, similarity);
-				const changeB = calculateEloChange(statsB.rating, statsA.rating, 1 - outcome, similarity);
-
-				updateStats(modelA, changeA, outcome);
-				updateStats(modelB, changeB, 1 - outcome);
-			});
-		});
-
-		return stats;
+	$: if (query !== null) {
+		debouncedLoad();
 	}
 
-	//////////////////////
-	//
-	// Calculate cosine similarity
-	//
-	//////////////////////
-
-	const cosineSimilarity = (vecA, vecB) => {
-		// Ensure the lengths of the vectors are the same
-		if (vecA.length !== vecB.length) {
-			throw new Error('Vectors must be the same length');
-		}
-
-		// Calculate the dot product
-		let dotProduct = 0;
-		let normA = 0;
-		let normB = 0;
-
-		for (let i = 0; i < vecA.length; i++) {
-			dotProduct += vecA[i] * vecB[i];
-			normA += vecA[i] ** 2;
-			normB += vecB[i] ** 2;
-		}
-
-		// Calculate the magnitudes
-		normA = Math.sqrt(normA);
-		normB = Math.sqrt(normB);
-
-		// Avoid division by zero
-		if (normA === 0 || normB === 0) {
+	$: sortedModels = [...rankedModels].sort((a, b) => {
+		const getValue = (m, key) => {
+			if (key === 'name') return m.name ?? m.id ?? '';
+			if (key === 'rating') return m.rating === '-' ? -Infinity : m.rating;
+			if (key === 'won' || key === 'lost') {
+				const v = m.stats[key];
+				return v === '-' ? -Infinity : Number(v);
+			}
 			return 0;
+		};
+		const aVal = getValue(a, orderBy);
+		const bVal = getValue(b, orderBy);
+		if (orderBy === 'name') {
+			return direction === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
 		}
-
-		// Return the cosine similarity
-		return dotProduct / (normA * normB);
-	};
-
-	const calculateMaxSimilarity = (queryEmbedding, tagEmbeddings: Map<string, number[]>) => {
-		let maxSimilarity = 0;
-		for (const tagEmbedding of tagEmbeddings.values()) {
-			const similarity = cosineSimilarity(queryEmbedding, tagEmbedding);
-			maxSimilarity = Math.max(maxSimilarity, similarity);
-		}
-		return maxSimilarity;
-	};
-
-	//////////////////////
-	//
-	// Embedding functions
-	//
-	//////////////////////
-
-	const loadEmbeddingModel = async () => {
-		// Check if the tokenizer and model are already loaded and stored in the window object
-		if (!window.tokenizer) {
-			window.tokenizer = await AutoTokenizer.from_pretrained(EMBEDDING_MODEL);
-		}
-
-		if (!window.model) {
-			window.model = await AutoModel.from_pretrained(EMBEDDING_MODEL);
-		}
-
-		// Use the tokenizer and model from the window object
-		tokenizer = window.tokenizer;
-		model = window.model;
-
-		// Pre-compute embeddings for all unique tags
-		const allTags = new Set(feedbacks.flatMap((feedback) => feedback.data.tags || []));
-		await getTagEmbeddings(Array.from(allTags));
-	};
-
-	const getEmbeddings = async (text: string) => {
-		const tokens = await tokenizer(text);
-		const output = await model(tokens);
-
-		// Perform mean pooling on the last hidden states
-		const embeddings = output.last_hidden_state.mean(1);
-		return embeddings.ort_tensor.data;
-	};
-
-	const getTagEmbeddings = async (tags: string[]) => {
-		const embeddings = new Map();
-		for (const tag of tags) {
-			if (!tagEmbeddings.has(tag)) {
-				tagEmbeddings.set(tag, await getEmbeddings(tag));
-			}
-			embeddings.set(tag, tagEmbeddings.get(tag));
-		}
-		return embeddings;
-	};
-
-	const debouncedQueryHandler = async () => {
-		loadingLeaderboard = true;
-
-		if (query.trim() === '') {
-			rankHandler();
-			return;
-		}
-
-		clearTimeout(debounceTimer);
-
-		debounceTimer = setTimeout(async () => {
-			const queryEmbedding = await getEmbeddings(query);
-			const similarities = new Map<string, number>();
-
-			for (const feedback of feedbacks) {
-				const feedbackTags = feedback.data.tags || [];
-				const tagEmbeddings = await getTagEmbeddings(feedbackTags);
-				const maxSimilarity = calculateMaxSimilarity(queryEmbedding, tagEmbeddings);
-				similarities.set(feedback.id, maxSimilarity);
-			}
-
-			rankHandler(similarities);
-		}, 1500); // Debounce for 1.5 seconds
-	};
-
-	$: query, debouncedQueryHandler();
-
-	onMount(async () => {
-		rankHandler();
+		return direction === 'asc' ? aVal - bVal : bVal - aVal;
 	});
 </script>
 
-<div class="mt-0.5 mb-2 gap-1 flex flex-col md:flex-row justify-between">
-	<div class="flex md:self-center text-lg font-medium px-0.5 shrink-0 items-center">
-		<div class=" gap-1">
-			{$i18n.t('Leaderboard')}
-		</div>
+<ModelModal bind:show={showModal} model={selectedModel} onClose={closeModal} />
 
-		<div class="flex self-center w-[1px] h-6 mx-2.5 bg-gray-50 dark:bg-gray-850" />
-
-		<span class="text-lg font-medium text-gray-500 dark:text-gray-300 mr-1.5"
-			>{rankedModels.length}</span
-		>
-	</div>
-
-	<div class=" flex space-x-2">
-		<Tooltip content={$i18n.t('Re-rank models by topic similarity')}>
-			<div class="flex flex-1">
-				<div class=" self-center ml-1 mr-3">
-					<MagnifyingGlass className="size-3" />
+<div>
+	<div class="sticky top-0 z-10 bg-white dark:bg-gray-900">
+		<div class="flex h-8 flex-1 items-center w-full gap-2">
+			<div class="flex min-w-0 flex-1 items-center">
+				<div class="self-center ml-1 mr-3">
+					<Search className="size-3.5" />
 				</div>
 				<input
-					class=" w-full text-sm pr-4 py-1 rounded-r-xl outline-none bg-transparent"
+					class="w-full text-sm pr-4 py-1 rounded-r-xl outline-hidden bg-transparent"
 					bind:value={query}
+					aria-label={$i18n.t('Search')}
 					placeholder={$i18n.t('Search')}
-					on:focus={() => {
-						loadEmbeddingModel();
-					}}
 				/>
+
+				{#if query}
+					<div class="self-center pl-1.5 translate-y-[0.5px] rounded-l-xl bg-transparent">
+						<button
+							class="py-0.5 rounded-full transition hover:text-gray-900 dark:hover:text-gray-100 text-gray-500 dark:text-gray-400 px-0"
+							aria-label={$i18n.t('Clear search')}
+							on:click={() => {
+								query = '';
+							}}
+						>
+							<XMark className="size-3" strokeWidth="2" />
+						</button>
+					</div>
+				{/if}
 			</div>
-		</Tooltip>
+		</div>
+	</div>
+
+	<div
+		class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full rounded-sm min-h-[6.25rem]"
+	>
+		{#if loading}
+			<div
+				class="absolute inset-0 flex items-center justify-center z-10 bg-white/50 dark:bg-gray-900/50"
+			>
+				<Spinner className="size-5" />
+			</div>
+		{/if}
+
+		{#if !rankedModels.length && !loading}
+			<div class="text-center text-xs text-gray-500 py-1">{$i18n.t('No models found')}</div>
+		{:else if rankedModels.length}
+			<table
+				class="w-full text-sm text-left text-gray-500 dark:text-gray-400 {loading
+					? 'opacity-20'
+					: ''}"
+			>
+				<thead class="text-xs text-gray-800 uppercase bg-transparent dark:text-gray-200">
+					<tr class="border-b-[1.5px] border-gray-50 dark:border-gray-850/30">
+						{#each [{ key: 'rating', label: 'RK', class: 'w-3' }, { key: 'name', label: $i18n.t('Model'), class: '' }, { key: 'rating', label: $i18n.t('Rating'), class: 'text-right w-fit' }, { key: 'won', label: $i18n.t('Won'), class: 'text-right w-5' }, { key: 'lost', label: $i18n.t('Lost'), class: 'text-right w-5' }] as col}
+							<th
+								scope="col"
+								class="font-normal select-none {col.class}"
+								aria-sort={orderBy === col.key
+									? direction === 'asc'
+										? 'ascending'
+										: 'descending'
+									: 'none'}
+							>
+								<button
+									type="button"
+									class="flex w-full cursor-pointer gap-1.5 items-center px-2.5 py-2 uppercase {col.class.includes(
+										'right'
+									)
+										? 'justify-end'
+										: ''}"
+									on:click={() => toggleSort(col.key)}
+								>
+									{$i18n.t(col.label)}
+									{#if orderBy === col.key}
+										{#if direction === 'asc'}<ChevronUp className="size-2" />{:else}<ChevronDown
+												className="size-2"
+											/>{/if}
+									{:else}
+										<span class="invisible"><ChevronUp className="size-2" /></span>
+									{/if}
+								</button>
+							</th>
+						{/each}
+					</tr>
+				</thead>
+				<tbody>
+					{#each sortedModels as model, idx (model.id)}
+						<tr
+							class="text-xs group cursor-pointer hover:bg-gray-50 dark:hover:bg-gray-850/50 transition"
+							on:click={() => openModal(model)}
+						>
+							<td class="px-3 py-1.5 font-normal text-gray-900 dark:text-white">
+								{model.rating !== '-' ? idx + 1 : '-'}
+							</td>
+							<td class="px-3 py-1.5">
+								<div class="flex items-center gap-2">
+									<img
+										src="{WEBUI_API_BASE_URL}/models/model/profile/image?id={model.id}"
+										alt={model.name}
+										class="size-5 rounded-full object-cover shrink-0"
+										on:error={(e) => {
+											// LICENSE covers this Open WebUI fallback logo.
+											// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+											// https://docs.openwebui.com/license.
+											e.target.src = '/favicon.png';
+										}}
+									/>
+									<Tooltip content={`${model.name} (${model.id})`} placement="top-start">
+										<button
+											type="button"
+											class="cursor-pointer font-normal text-left text-gray-800 dark:text-gray-200 line-clamp-1"
+											on:click={() => openModal(model)}>{model.name}</button
+										>
+									</Tooltip>
+								</div>
+							</td>
+							<td class="px-3 py-1.5 text-right font-normal text-gray-900 dark:text-white">
+								{model.rating}
+							</td>
+							<td class="px-3 py-1.5 text-right font-normal text-green-500 w-10">
+								{#if model.stats.won === '-'}-{:else}
+									<span class="hidden group-hover:inline"
+										>{((Number(model.stats.won) / model.stats.count) * 100).toFixed(1)}%</span
+									>
+									<span class="group-hover:hidden">{model.stats.won}</span>
+								{/if}
+							</td>
+							<td class="px-3 py-1.5 text-right font-normal text-red-500 w-10">
+								{#if model.stats.lost === '-'}-{:else}
+									<span class="hidden group-hover:inline"
+										>{((Number(model.stats.lost) / model.stats.count) * 100).toFixed(1)}%</span
+									>
+									<span class="group-hover:hidden">{model.stats.lost}</span>
+								{/if}
+							</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
 	</div>
 </div>
 
-<div class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full rounded pt-0.5">
-	{#if loadingLeaderboard}
-		<div class=" absolute top-0 bottom-0 left-0 right-0 flex">
-			<div class="m-auto">
-				<Spinner />
-			</div>
-		</div>
-	{/if}
-	{#if (rankedModels ?? []).length === 0}
-		<div class="text-center text-xs text-gray-500 dark:text-gray-400 py-1">
-			{$i18n.t('No models found')}
-		</div>
-	{:else}
-		<table
-			class="w-full text-sm text-left text-gray-500 dark:text-gray-400 table-auto max-w-full rounded {loadingLeaderboard
-				? 'opacity-20'
-				: ''}"
-		>
-			<thead
-				class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-850 dark:text-gray-400 -translate-y-0.5"
-			>
-				<tr class="">
-					<th scope="col" class="px-3 py-1.5 cursor-pointer select-none w-3">
-						{$i18n.t('RK')}
-					</th>
-					<th scope="col" class="px-3 py-1.5 cursor-pointer select-none">
-						{$i18n.t('Model')}
-					</th>
-					<th scope="col" class="px-3 py-1.5 text-right cursor-pointer select-none w-fit">
-						{$i18n.t('Rating')}
-					</th>
-					<th scope="col" class="px-3 py-1.5 text-right cursor-pointer select-none w-5">
-						{$i18n.t('Won')}
-					</th>
-					<th scope="col" class="px-3 py-1.5 text-right cursor-pointer select-none w-5">
-						{$i18n.t('Lost')}
-					</th>
-				</tr>
-			</thead>
-			<tbody class="">
-				{#each rankedModels as model, modelIdx (model.id)}
-					<tr class="bg-white dark:bg-gray-900 dark:border-gray-850 text-xs group">
-						<td class="px-3 py-1.5 text-left font-medium text-gray-900 dark:text-white w-fit">
-							<div class=" line-clamp-1">
-								{model?.rating !== '-' ? modelIdx + 1 : '-'}
-							</div>
-						</td>
-						<td class="px-3 py-1.5 flex flex-col justify-center">
-							<div class="flex items-center gap-2">
-								<div class="flex-shrink-0">
-									<img
-										src={model?.info?.meta?.profile_image_url ?? '/favicon.png'}
-										alt={model.name}
-										class="size-5 rounded-full object-cover shrink-0"
-									/>
-								</div>
-
-								<div class="font-medium text-gray-800 dark:text-gray-200 pr-4">
-									{model.name}
-								</div>
-							</div>
-						</td>
-						<td class="px-3 py-1.5 text-right font-medium text-gray-900 dark:text-white w-max">
-							{model.rating}
-						</td>
-
-						<td class=" px-3 py-1.5 text-right font-semibold text-green-500">
-							<div class=" w-10">
-								{#if model.stats.won === '-'}
-									-
-								{:else}
-									<span class="hidden group-hover:inline"
-										>{((model.stats.won / model.stats.count) * 100).toFixed(1)}%</span
-									>
-									<span class=" group-hover:hidden">{model.stats.won}</span>
-								{/if}
-							</div>
-						</td>
-
-						<td class="px-3 py-1.5 text-right font-semibold text-red-500">
-							<div class=" w-10">
-								{#if model.stats.lost === '-'}
-									-
-								{:else}
-									<span class="hidden group-hover:inline"
-										>{((model.stats.lost / model.stats.count) * 100).toFixed(1)}%</span
-									>
-									<span class=" group-hover:hidden">{model.stats.lost}</span>
-								{/if}
-							</div>
-						</td>
-					</tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
-</div>
-
-<div class=" text-gray-500 text-xs mt-1.5 w-full flex justify-end">
-	<div class=" text-right">
+<div class="text-gray-500 text-xs mt-1.5 w-full flex justify-end">
+	<div class="text-right">
 		<div class="line-clamp-1">
 			ⓘ {$i18n.t(
 				'The evaluation leaderboard is based on the Elo rating system and is updated in real-time.'
 			)}
 		</div>
-		{$i18n.t(
-			'The leaderboard is currently in beta, and we may adjust the rating calculations as we refine the algorithm.'
-		)}
 	</div>
 </div>

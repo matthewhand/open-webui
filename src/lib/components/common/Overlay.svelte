@@ -11,7 +11,7 @@
 	{#if show}
 		<div class="absolute w-full h-full flex">
 			<div
-				class="absolute rounded"
+				class="absolute rounded-sm"
 				style="inset: -10px; opacity: {opacity}; backdrop-filter: blur(5px);"
 			/>
 
@@ -21,7 +21,7 @@
 				</div>
 
 				{#if content !== ''}
-					<div class="text-center text-gray-100 text-xs font-medium z-50">
+					<div class="text-center text-gray-100 text-xs font-normal z-50">
 						{content}
 					</div>
 				{/if}

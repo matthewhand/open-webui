@@ -1,46 +1,233 @@
 <script lang="ts">
+	import type { WorkspaceContext } from '$lib/types';
+	import { getPageContext } from '$lib/utils/page';
+	const { goto } = getPageContext();
+
+	import Comments from '$lib/components/comments/Comments.svelte';
+	import type { CommentsRequest } from '$lib/components/comments/CommentsPanel.svelte';
+	let comments: CommentsRequest | null = null;
+	import CommentButton from '$lib/components/comments/CommentButton.svelte';
+	import WorkspaceAccessModal from './common/WorkspaceAccessModal.svelte';
+	let accessModal: WorkspaceAccessModal;
+	import dayjs from 'dayjs';
+	import relativeTime from 'dayjs/plugin/relativeTime';
 	import { toast } from 'svelte-sonner';
 	import fileSaver from 'file-saver';
 	const { saveAs } = fileSaver;
 
-	import { goto } from '$app/navigation';
-	import { onMount, getContext } from 'svelte';
-	import { WEBUI_NAME, config, prompts as _prompts, user } from '$lib/stores';
+	dayjs.extend(relativeTime);
+
+	import { onMount, getContext, tick, onDestroy } from 'svelte';
+	import type { Writable } from 'svelte/store';
+	import type { i18n as i18nType } from 'i18next';
+	import { WEBUI_NAME, config, user } from '$lib/stores';
+	import { COMMUNITY_ORIGINS } from '$lib/constants';
 
 	import {
 		createNewPrompt,
-		deletePromptByCommand,
-		getPrompts,
-		getPromptList
+		deletePromptById,
+		togglePromptById,
+		getPromptItems,
+		getPromptTags,
+		getPrompts
 	} from '$lib/apis/prompts';
+	import { capitalizeFirstLetter, slugify, copyToClipboard } from '$lib/utils';
 
 	import PromptMenu from './Prompts/PromptMenu.svelte';
 	import EllipsisHorizontal from '../icons/EllipsisHorizontal.svelte';
+	import Clipboard from '../icons/Clipboard.svelte';
+	import Check from '../icons/Check.svelte';
 	import DeleteConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
+	import Modal from '../common/Modal.svelte';
+	import PromptEditor from './Prompts/PromptEditor.svelte';
 	import Search from '../icons/Search.svelte';
-	import Plus from '../icons/Plus.svelte';
-	import ChevronRight from '../icons/ChevronRight.svelte';
 	import Spinner from '../common/Spinner.svelte';
 	import Tooltip from '../common/Tooltip.svelte';
-	import { capitalizeFirstLetter } from '$lib/utils';
+	import ProfilePreview from '$lib/components/channel/Messages/Message/ProfilePreview.svelte';
+	import ProfileImage from '$lib/components/chat/Messages/ProfileImage.svelte';
+	import XMark from '../icons/XMark.svelte';
+	import GarbageBin from '../icons/GarbageBin.svelte';
+	import ViewSelector from './common/ViewSelector.svelte';
+	import TagSelector from './common/TagSelector.svelte';
+	import CommunityDiscover from './common/CommunityDiscover.svelte';
+	import Badge from '$lib/components/common/Badge.svelte';
+	import Switch from '../common/Switch.svelte';
+	import Pagination from '../common/Pagination.svelte';
+	import ChevronDown from '../icons/ChevronDown.svelte';
+	import ChevronUp from '../icons/ChevronUp.svelte';
 
-	const i18n = getContext('i18n');
+	type PromptDraft = {
+		id?: string;
+		name: string;
+		command: string;
+		content: string;
+		tags: string[];
+		access_grants: any[];
+		commit_message?: string;
+		is_production?: boolean;
+	};
+
+	export let showCreateOnMount = false;
+	export let createModalCloseHref = '';
+
+	let shiftKey = false;
+
+	const i18n = getContext<Writable<i18nType>>('i18n');
+	const { workspaceActions, workspaceCounts } = getContext<WorkspaceContext>('workspace');
 	let promptsImportInputElement: HTMLInputElement;
 	let loaded = false;
 
-	let importFiles = '';
+	let importFiles = null;
 	let query = '';
+	let searchDebounceTimer: ReturnType<typeof setTimeout>;
+	let searchController: AbortController;
 
-	let prompts = [];
+	let prompts = null;
+	let tags = [];
+	let total = null;
 
 	let showDeleteConfirm = false;
+	let showCreateModal = false;
+	let createPrompt: PromptDraft | null = null;
 	let deletePrompt = null;
 
-	let filteredItems = [];
-	$: filteredItems = prompts.filter((p) => query === '' || p.command.includes(query));
+	let tagsContainerElement: HTMLDivElement;
+	let viewOption = '';
+	let selectedTag = '';
+	let copiedId: string | null = null;
+	$: hasFilters = Boolean(query || viewOption || selectedTag);
+
+	let sortKey = 'updated_at';
+	let sortDirection = 'desc';
+	let openPromptMenuId: string | null = null;
+
+	let page = 1;
+
+	$: if (loaded) {
+		workspaceActions.set([
+			{
+				id: 'prompts-new',
+				label: $i18n.t('Create'),
+				onClick: () => {
+					createPrompt = null;
+					showCreateModal = true;
+				}
+			},
+			{
+				id: 'prompts-import',
+				label: $i18n.t('Import JSON'),
+				onClick: () => promptsImportInputElement?.click(),
+				visible: $user?.role === 'admin' || $user?.permissions?.workspace?.prompts_import
+			},
+			{
+				id: 'prompts-export',
+				label: $i18n.t('Export JSON'),
+				onClick: async () => {
+					const _prompts = await getPrompts(localStorage.token).catch((error) => {
+						toast.error(`${error}`);
+						return null;
+					});
+					if (!_prompts) {
+						return;
+					}
+					let blob = new Blob([JSON.stringify(_prompts)], {
+						type: 'application/json'
+					});
+					saveAs(blob, `prompts-export-${Date.now()}.json`);
+				},
+				visible: $user?.role === 'admin' || $user?.permissions?.workspace?.prompts_export
+			}
+		]);
+	}
+
+	const handleSearchInput = () => {
+		searchController?.abort();
+		clearTimeout(searchDebounceTimer);
+		searchDebounceTimer = setTimeout(() => {
+			if (page !== 1) {
+				page = 1;
+			} else {
+				getPromptList();
+			}
+		}, 300);
+	};
+
+	// Immediate response to page/filter changes
+	$: if (
+		loaded &&
+		page &&
+		selectedTag !== undefined &&
+		viewOption !== undefined &&
+		sortKey !== undefined &&
+		sortDirection !== undefined
+	) {
+		getPromptList();
+	}
+
+	const setSortKey = (key: string) => {
+		if (sortKey === key) {
+			sortDirection = sortDirection === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortKey = key;
+			sortDirection = key === 'updated_at' ? 'desc' : 'asc';
+		}
+	};
+
+	const openPrompt = (prompt) => {
+		goto(`/workspace/prompts/${prompt.id}`);
+	};
+
+	const shouldIgnoreRowClick = (target: EventTarget | null) => {
+		return target instanceof Element && !!target.closest('button, a, input, [role="menu"]');
+	};
+
+	const getPromptList = async () => {
+		if (!loaded) return;
+
+		clearTimeout(searchDebounceTimer);
+		searchController?.abort();
+		searchController = new AbortController();
+		const { signal } = searchController;
+
+		try {
+			const res = await getPromptItems(
+				localStorage.token,
+				query,
+				viewOption,
+				selectedTag,
+				sortKey,
+				sortDirection,
+				page,
+				signal
+			).catch((error) => {
+				if (!signal.aborted) toast.error(`${error}`);
+				return null;
+			});
+
+			if (signal.aborted) return;
+
+			if (res) {
+				prompts = res.items;
+				total = res.total;
+				workspaceCounts.update((counts) => ({ ...counts, prompts: total }));
+
+				// get tags
+				const fetchedTags = await getPromptTags(localStorage.token).catch((error) => {
+					if (!signal.aborted) toast.error(`${error}`);
+					return [];
+				});
+				if (!signal.aborted) tags = fetchedTags;
+			}
+		} catch (err) {
+			console.error(err);
+		}
+	};
 
 	const shareHandler = async (prompt) => {
-		toast.success($i18n.t('Redirecting you to OpenWebUI Community'));
+		// LICENSE covers this Open WebUI Community wordmark.
+		// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+		// https://docs.openwebui.com/license.
+		toast.success($i18n.t('Redirecting you to Open WebUI Community'));
 
 		const url = 'https://openwebui.com';
 
@@ -57,9 +244,50 @@
 		);
 	};
 
+	const toPromptDraft = (prompt: any): PromptDraft => ({
+		name: prompt.name || prompt.title || 'Prompt',
+		command: prompt.command || '',
+		content: prompt.content || '',
+		tags: prompt.tags || [],
+		access_grants: prompt.access_grants !== undefined ? prompt.access_grants : []
+	});
+
+	const openCreateModal = (prompt: PromptDraft | null = null) => {
+		createPrompt = prompt;
+		showCreateModal = true;
+	};
+
+	const closeCreateModal = async () => {
+		showCreateModal = false;
+		createPrompt = null;
+
+		if (createModalCloseHref) {
+			await goto(createModalCloseHref);
+		}
+	};
+
+	const createPromptHandler = async (prompt: PromptDraft) => {
+		const res = await createNewPrompt(localStorage.token, prompt);
+
+		if (res) {
+			toast.success($i18n.t('Prompt created successfully'));
+			page = 1;
+			await getPromptList();
+			await closeCreateModal();
+		}
+		return res;
+	};
+
 	const cloneHandler = async (prompt) => {
-		sessionStorage.prompt = JSON.stringify(prompt);
-		goto('/workspace/prompts/create');
+		const clonedPrompt = { ...prompt };
+
+		clonedPrompt.name = `${clonedPrompt.name} (Clone)`;
+		const baseCommand = clonedPrompt.command.startsWith('/')
+			? clonedPrompt.command.substring(1)
+			: clonedPrompt.command;
+		clonedPrompt.command = slugify(`${baseCommand} clone`);
+
+		openCreateModal(toPromptDraft(clonedPrompt));
 	};
 
 	const exportHandler = async (prompt) => {
@@ -69,278 +297,529 @@
 		saveAs(blob, `prompt-export-${Date.now()}.json`);
 	};
 
-	const deleteHandler = async (prompt) => {
-		const command = prompt.command;
-		await deletePromptByCommand(localStorage.token, command);
-		await init();
+	const copyHandler = async (prompt) => {
+		const res = await copyToClipboard(prompt.content);
+		if (res) {
+			toast.success($i18n.t('Copied to clipboard'));
+			copiedId = prompt.command;
+			setTimeout(() => {
+				copiedId = null;
+			}, 2000);
+		}
 	};
 
-	const init = async () => {
-		prompts = await getPromptList(localStorage.token);
-		await _prompts.set(await getPrompts(localStorage.token));
+	const deleteHandler = async (prompt) => {
+		const command = prompt.command;
+
+		const res = await deletePromptById(localStorage.token, prompt.id).catch((err) => {
+			toast.error(err);
+			return null;
+		});
+
+		if (res) {
+			toast.success($i18n.t(`Deleted {{name}}`, { name: command }));
+		}
+
+		page = 1;
+		getPromptList();
 	};
 
 	onMount(async () => {
-		await init();
+		viewOption = localStorage?.workspaceViewOption || '';
 		loaded = true;
+
+		const onMessage = async (event: MessageEvent) => {
+			if (!COMMUNITY_ORIGINS.includes(event.origin)) {
+				return;
+			}
+
+			openCreateModal(toPromptDraft(JSON.parse(event.data)));
+		};
+
+		window.addEventListener('message', onMessage);
+
+		if (window.opener ?? false) {
+			window.opener.postMessage('loaded', '*');
+		}
+
+		if (sessionStorage.prompt) {
+			const prompt = JSON.parse(sessionStorage.prompt);
+			sessionStorage.removeItem('prompt');
+			openCreateModal(toPromptDraft(prompt));
+		} else if (showCreateOnMount) {
+			openCreateModal();
+		}
+
+		let keyboardFocusedElement: Element | null = null;
+		const onFocusIn = (event: FocusEvent) => {
+			const target = event.target as Element;
+			keyboardFocusedElement = target.matches(':focus-visible:not(input, textarea)')
+				? target
+				: null;
+		};
+
+		const onKeyDown = (event: KeyboardEvent) => {
+			if (event.key === 'Shift' && document.activeElement !== keyboardFocusedElement) {
+				shiftKey = true;
+			}
+		};
+
+		const onKeyUp = (event: KeyboardEvent) => {
+			if (event.key === 'Shift') {
+				shiftKey = false;
+			}
+		};
+
+		const onBlur = () => {
+			shiftKey = false;
+		};
+
+		window.addEventListener('focusin', onFocusIn);
+		window.addEventListener('keydown', onKeyDown);
+		window.addEventListener('keyup', onKeyUp);
+		window.addEventListener('blur', onBlur);
+
+		return () => {
+			clearTimeout(searchDebounceTimer);
+			window.removeEventListener('message', onMessage);
+			window.removeEventListener('focusin', onFocusIn);
+			window.removeEventListener('keydown', onKeyDown);
+			window.removeEventListener('keyup', onKeyUp);
+			window.removeEventListener('blur', onBlur);
+		};
 	});
+
+	onDestroy(() => {
+		searchController?.abort();
+		clearTimeout(searchDebounceTimer);
+	});
+	import PageTitle from '$lib/components/common/PageTitle.svelte';
 </script>
 
-<svelte:head>
-	<title>
-		{$i18n.t('Prompts')} | {$WEBUI_NAME}
-	</title>
-</svelte:head>
+<WorkspaceAccessModal bind:this={accessModal} resourceType="prompts" onUpdated={getPromptList} />
 
-{#if loaded}
-	<DeleteConfirmDialog
-		bind:show={showDeleteConfirm}
-		title={$i18n.t('Delete prompt?')}
-		on:confirm={() => {
-			deleteHandler(deletePrompt);
-		}}
-	>
-		<div class=" text-sm text-gray-500">
-			{$i18n.t('This will delete')} <span class="  font-semibold">{deletePrompt.command}</span>.
-		</div>
-	</DeleteConfirmDialog>
+<!-- LICENSE covers this Open WebUI browser-title identifier.
+	Do not alter, remove, obscure, or replace it except as LICENSE permits:
+	https://docs.openwebui.com/license. -->
+<PageTitle title={$i18n.t('Prompts') + ' / ' + $WEBUI_NAME} />
 
-	<div class="flex flex-col gap-1 my-1.5">
-		<div class="flex justify-between items-center">
-			<div class="flex md:self-center text-xl font-medium px-0.5 items-center">
-				{$i18n.t('Prompts')}
-				<div class="flex self-center w-[1px] h-6 mx-2.5 bg-gray-50 dark:bg-gray-850" />
-				<span class="text-lg font-medium text-gray-500 dark:text-gray-300"
-					>{filteredItems.length}</span
-				>
+<h1 class="sr-only">{$i18n.t('Prompts')}</h1>
+
+<Comments modal bind:view={comments} resourceType="prompt">
+	{#if loaded && prompts !== null}
+		<DeleteConfirmDialog
+			bind:show={showDeleteConfirm}
+			title={$i18n.t('Delete prompt?')}
+			on:confirm={() => {
+				deleteHandler(deletePrompt);
+			}}
+		>
+			<div class=" text-sm text-gray-500 truncate">
+				{$i18n.t('This will delete')} <span class="  font-normal">{deletePrompt.command}</span>.
 			</div>
-		</div>
+		</DeleteConfirmDialog>
 
-		<div class=" flex w-full space-x-2">
-			<div class="flex flex-1">
-				<div class=" self-center ml-1 mr-3">
-					<Search className="size-3.5" />
-				</div>
-				<input
-					class=" w-full text-sm pr-4 py-1 rounded-r-xl outline-none bg-transparent"
-					bind:value={query}
-					placeholder={$i18n.t('Search Prompts')}
+		<Modal
+			bind:show={showCreateModal}
+			size="full"
+			ariaLabel={createPrompt !== null ? $i18n.t('Clone Prompt') : $i18n.t('Create Prompt')}
+			className="!w-[calc(100vw-2rem)] sm:!w-[calc(100vw-3rem)] lg:!w-[calc(100vw-4rem)] !max-w-[80rem] h-[min(54rem,calc(100dvh-4rem))] max-h-[calc(100dvh-4rem)] flex flex-col bg-white dark:bg-gray-900 rounded-4xl"
+		>
+			{#key createPrompt}
+				<PromptEditor
+					modal={true}
+					prompt={createPrompt}
+					clone={createPrompt !== null}
+					onSubmit={createPromptHandler}
+					onCancel={() => {
+						closeCreateModal();
+					}}
 				/>
-			</div>
+			{/key}
+		</Modal>
 
-			<div>
-				<a
-					class=" px-2 py-2 rounded-xl hover:bg-gray-700/10 dark:hover:bg-gray-100/10 dark:text-gray-300 dark:hover:text-white transition font-medium text-sm flex items-center space-x-1"
-					href="/workspace/prompts/create"
-				>
-					<Plus className="size-3.5" />
-				</a>
-			</div>
-		</div>
-	</div>
+		<input
+			id="prompts-import-input"
+			bind:this={promptsImportInputElement}
+			bind:files={importFiles}
+			type="file"
+			accept=".json"
+			hidden
+			on:change={() => {
+				console.log(importFiles);
+				if (!importFiles || importFiles.length === 0) return;
 
-	<div class="mb-5 gap-2 grid lg:grid-cols-2 xl:grid-cols-3">
-		{#each filteredItems as prompt}
-			<div
-				class=" flex space-x-4 cursor-pointer w-full px-3 py-2 dark:hover:bg-white/5 hover:bg-black/5 rounded-xl transition"
-			>
-				<div class=" flex flex-1 space-x-4 cursor-pointer w-full">
-					<a href={`/workspace/prompts/edit?command=${encodeURIComponent(prompt.command)}`}>
-						<div class=" flex-1 flex items-center gap-2 self-center">
-							<div class=" font-semibold line-clamp-1 capitalize">{prompt.title}</div>
-							<div class=" text-xs overflow-hidden text-ellipsis line-clamp-1">
-								{prompt.command}
-							</div>
-						</div>
+				const reader = new FileReader();
+				reader.onload = async (event) => {
+					const savedPrompts = JSON.parse(event.target.result);
+					console.log(savedPrompts);
 
-						<div class=" text-xs px-0.5">
-							<Tooltip
-								content={prompt?.user?.email ?? $i18n.t('Deleted User')}
-								className="flex shrink-0"
-								placement="top-start"
+					try {
+						for (const prompt of savedPrompts) {
+							await createNewPrompt(localStorage.token, {
+								command: prompt.command,
+								name: prompt.name,
+								content: prompt.content
+							}).catch((error) => {
+								toast.error(typeof error === 'string' ? error : JSON.stringify(error));
+								return null;
+							});
+						}
+
+						page = 1;
+						await getPromptList();
+					} finally {
+						importFiles = null;
+						promptsImportInputElement.value = '';
+					}
+				};
+
+				reader.readAsText(importFiles[0]);
+			}}
+		/>
+
+		<div class="space-y-0">
+			<div class="flex h-8 w-full items-center gap-2">
+				<div class="flex min-w-0 flex-1">
+					<div class=" self-center ml-1 mr-3">
+						<Search className="size-3.5" />
+					</div>
+					<input
+						class=" w-full text-sm pr-4 py-1 rounded-r-xl outline-hidden bg-transparent"
+						bind:value={query}
+						on:input={handleSearchInput}
+						aria-label={$i18n.t('Search Prompts')}
+						placeholder={$i18n.t('Search Prompts')}
+					/>
+
+					{#if query}
+						<div class="self-center pl-1.5 translate-y-[0.5px] rounded-l-xl bg-transparent">
+							<button
+								class="py-0.5 rounded-full transition hover:text-gray-900 dark:hover:text-gray-100 text-gray-500 dark:text-gray-400 px-0"
+								aria-label={$i18n.t('Clear search')}
+								on:click={() => {
+									query = '';
+									handleSearchInput();
+								}}
 							>
-								<div class="shrink-0 text-gray-500">
-									{$i18n.t('By {{name}}', {
-										name: capitalizeFirstLetter(
-											prompt?.user?.name ?? prompt?.user?.email ?? $i18n.t('Deleted User')
-										)
-									})}
-								</div>
-							</Tooltip>
+								<XMark className="size-3" strokeWidth="2" />
+							</button>
 						</div>
-					</a>
+					{/if}
 				</div>
-				<div class="flex flex-row gap-0.5 self-center">
-					<a
-						class="self-center w-fit text-sm px-2 py-2 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-						type="button"
-						href={`/workspace/prompts/edit?command=${encodeURIComponent(prompt.command)}`}
-					>
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							fill="none"
-							viewBox="0 0 24 24"
-							stroke-width="1.5"
-							stroke="currentColor"
-							class="w-4 h-4"
-						>
-							<path
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								d="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L6.832 19.82a4.5 4.5 0 01-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 011.13-1.897L16.863 4.487zm0 0L19.5 7.125"
-							/>
-						</svg>
-					</a>
 
-					<PromptMenu
-						shareHandler={() => {
-							shareHandler(prompt);
-						}}
-						cloneHandler={() => {
-							cloneHandler(prompt);
-						}}
-						exportHandler={() => {
-							exportHandler(prompt);
-						}}
-						deleteHandler={async () => {
-							deletePrompt = prompt;
-							showDeleteConfirm = true;
-						}}
-						onClose={() => {}}
+				<div
+					class="flex max-w-[55%] shrink-0 overflow-x-auto scrollbar-none"
+					bind:this={tagsContainerElement}
+					on:wheel={(e) => {
+						if (e.deltaY !== 0) {
+							e.preventDefault();
+							e.currentTarget.scrollLeft += e.deltaY;
+						}
+					}}
+				>
+					<div
+						class="flex w-fit gap-0.5 text-center text-sm rounded-full bg-transparent whitespace-nowrap"
+					>
+						<ViewSelector
+							bind:value={viewOption}
+							align="end"
+							onChange={async (value) => {
+								localStorage.workspaceViewOption = value;
+								page = 1;
+								await tick();
+							}}
+						/>
+
+						{#if (tags ?? []).length > 0}
+							<TagSelector
+								bind:value={selectedTag}
+								align="end"
+								items={tags.map((tag) => ({ value: tag, label: tag }))}
+								onChange={async () => {
+									page = 1;
+									await tick();
+								}}
+							/>
+						{/if}
+					</div>
+				</div>
+			</div>
+
+			{#if prompts === null}
+				<div class="w-full h-full flex justify-center items-center my-16 mb-24">
+					<Spinner className="size-5" />
+				</div>
+			{:else if (prompts ?? []).length !== 0}
+				<div class="@container">
+					<div
+						class="grid grid-cols-[minmax(0,1fr)_9rem_8rem_9.5rem] items-center gap-x-4 px-2 @max-[48rem]:grid-cols-[minmax(0,1fr)_7rem_9.5rem] @max-[48rem]:gap-x-3 @max-[36rem]:grid-cols-[minmax(0,1fr)_9.5rem] @max-[36rem]:gap-x-2 min-h-6 text-xs text-gray-500 dark:text-gray-400"
 					>
 						<button
-							class="self-center w-fit text-sm p-1.5 dark:text-gray-300 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
+							class="flex min-w-0 flex-1 items-center gap-1 py-0.5 text-left"
 							type="button"
+							on:click={() => setSortKey('name')}
 						>
-							<EllipsisHorizontal className="size-5" />
+							{$i18n.t('Name')}
+							{#if sortKey === 'name'}
+								{#if sortDirection === 'asc'}
+									<ChevronUp className="size-2" />
+								{:else}
+									<ChevronDown className="size-2" />
+								{/if}
+							{/if}
 						</button>
-					</PromptMenu>
+
+						<div class="@max-[48rem]:hidden">{$i18n.t('Owner')}</div>
+
+						<button
+							class="@max-[36rem]:hidden flex min-w-0 items-center gap-1 py-0.5 text-left"
+							type="button"
+							on:click={() => setSortKey('updated_at')}
+						>
+							{$i18n.t('Updated at')}
+							{#if sortKey === 'updated_at'}
+								{#if sortDirection === 'asc'}
+									<ChevronUp className="size-2" />
+								{:else}
+									<ChevronDown className="size-2" />
+								{/if}
+							{/if}
+						</button>
+						<span class="sr-only">{$i18n.t('Actions')}</span>
+					</div>
+
+					<div class="grid gap-y-0.5">
+						{#each prompts as prompt (prompt.id)}
+							<div
+								class="grid grid-cols-[minmax(0,1fr)_9rem_8rem_9.5rem] items-center gap-x-4 px-2 @max-[48rem]:grid-cols-[minmax(0,1fr)_7rem_9.5rem] @max-[48rem]:gap-x-3 @max-[36rem]:grid-cols-[minmax(0,1fr)_9.5rem] @max-[36rem]:gap-x-2 min-h-12 rounded-lg py-1.5 hover:bg-black/[0.03] dark:hover:bg-white/[0.03] group cursor-pointer text-left"
+								role="presentation"
+								on:click={(e) => {
+									if (shouldIgnoreRowClick(e.target)) return;
+									openPrompt(prompt);
+								}}
+							>
+								<div class="flex min-w-0 flex-1 items-center gap-1 overflow-hidden">
+									<div class="flex min-w-0 flex-1 flex-col overflow-hidden">
+										<div class="flex min-w-0 items-center gap-2 overflow-hidden">
+											<div class="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+												<Tooltip content={prompt.name} className="min-w-0" placement="top-start">
+													<a
+														href={`/workspace/prompts/${prompt.id}`}
+														class="focus-ring block truncate rounded text-[0.8125rem] leading-5 text-gray-800 group-hover:underline focus-visible:underline dark:text-gray-200"
+														>{prompt.name}</a
+													>
+												</Tooltip>
+												{#if !prompt.write_access}
+													<Badge type="subtle" content={$i18n.t('Read Only')} />
+												{/if}
+											</div>
+										</div>
+
+										<div class="mt-0.5 min-w-0">
+											{#if prompt.content}
+												<Tooltip content={prompt.content} className="min-w-0" placement="top-start">
+													<div class="truncate text-xs leading-4 text-gray-500 dark:text-gray-400">
+														{prompt.content}
+													</div>
+												</Tooltip>
+											{/if}
+										</div>
+									</div>
+								</div>
+
+								<div class="@max-[48rem]:hidden min-w-0 text-xs text-gray-600 dark:text-gray-400">
+									<ProfilePreview
+										user={prompt?.user ?? null}
+										side="bottom"
+										className="w-full min-w-0"
+									>
+										<span class="flex w-full min-w-0 items-center gap-2">
+											<ProfileImage
+												src={prompt?.user?.id
+													? `/api/v1/users/${prompt.user.id}/profile/image`
+													: '/user.png'}
+												className="size-5 shrink-0 rounded-full!"
+											/>
+											<span class="min-w-0 truncate">
+												{capitalizeFirstLetter(
+													prompt?.user?.name ?? prompt?.user?.email ?? $i18n.t('Deleted User')
+												)}
+											</span>
+										</span>
+									</ProfilePreview>
+								</div>
+								<Tooltip
+									content={dayjs((prompt.updated_at ?? prompt.created_at) * 1000)
+										.locale($i18n.language)
+										.format('LLLL')}
+									className="@max-[36rem]:hidden min-w-0"
+								>
+									<div class="shrink-0 truncate text-xs leading-5 text-gray-500 dark:text-gray-400">
+										{dayjs((prompt.updated_at ?? prompt.created_at) * 1000)
+											.locale($i18n.language)
+											.fromNow()}
+									</div>
+								</Tooltip>
+								<div class="flex min-w-0 items-center justify-end gap-1.5">
+									<div class="flex shrink-0 flex-row items-center gap-1.5 self-center">
+										{#if shiftKey}
+											<Tooltip content={$i18n.t('Delete')}>
+												<button
+													class="flex size-6 items-center justify-center rounded-lg text-gray-400 transition dark:text-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
+													type="button"
+													aria-label={$i18n.t('Delete')}
+													disabled={!prompt.write_access}
+													on:click={(e) => {
+														e.preventDefault();
+														e.stopPropagation();
+														deleteHandler(prompt);
+													}}
+												>
+													<GarbageBin className="size-4" />
+												</button>
+											</Tooltip>
+										{:else}
+											<div class="flex shrink-0 flex-row items-center gap-1.5 self-center">
+												<Tooltip content={$i18n.t('Copy Prompt')}>
+													<button
+														class="flex size-6 items-center justify-center rounded-lg text-gray-400 transition dark:text-gray-500"
+														type="button"
+														aria-label={$i18n.t('Copy Prompt')}
+														on:click={(e) => {
+															e.preventDefault();
+															e.stopPropagation();
+															copyHandler(prompt);
+														}}
+													>
+														{#if copiedId === prompt.command}
+															<Check className="size-4" strokeWidth="1.5" />
+														{:else}
+															<Clipboard className="size-4" strokeWidth="1.5" />
+														{/if}
+													</button>
+												</Tooltip>
+
+												<CommentButton
+													onComment={(request) => (comments = request)}
+													modal
+													className="flex size-6 shrink-0 items-center justify-center rounded-lg text-gray-400 transition dark:text-gray-500"
+													resource={{ resource_type: 'prompt', resource_id: prompt.id }}
+												/>
+												<PromptMenu
+													onComment={(request) => (comments = request)}
+													resourceId={prompt.id}
+													accessHandler={$user?.permissions?.sharing?.prompts ||
+													$user?.role === 'admin'
+														? () => accessModal.open(prompt.id)
+														: null}
+													writeAccess={prompt.write_access}
+													show={openPromptMenuId === prompt.id}
+													editHandler={() => {
+														goto(`/workspace/prompts/${prompt.id}`);
+													}}
+													shareHandler={() => {
+														shareHandler(prompt);
+													}}
+													cloneHandler={() => {
+														cloneHandler(prompt);
+													}}
+													exportHandler={() => {
+														exportHandler(prompt);
+													}}
+													deleteHandler={async () => {
+														deletePrompt = prompt;
+														showDeleteConfirm = true;
+													}}
+													onClose={() => {
+														openPromptMenuId = null;
+													}}
+												>
+													<button
+														class="flex size-6 items-center justify-center rounded-lg text-gray-400 transition dark:text-gray-500"
+														type="button"
+														aria-label={$i18n.t('Prompt Menu')}
+														on:click={(e) => {
+															e.preventDefault();
+															e.stopPropagation();
+															openPromptMenuId = openPromptMenuId === prompt.id ? null : prompt.id;
+														}}
+													>
+														<EllipsisHorizontal className="size-4" />
+													</button>
+												</PromptMenu>
+
+												{#if prompt.write_access}
+													<div
+														class="flex h-6 items-center"
+														role="presentation"
+														on:click={(e) => {
+															e.stopPropagation();
+															e.preventDefault();
+														}}
+													>
+														<Tooltip
+															content={prompt.is_active !== false
+																? $i18n.t('Enabled')
+																: $i18n.t('Disabled')}
+														>
+															<Switch
+																bind:state={prompt.is_active}
+																ariaLabel={$i18n.t('Enabled')}
+																on:change={async () => {
+																	togglePromptById(localStorage.token, prompt.id);
+																}}
+															/>
+														</Tooltip>
+													</div>
+												{:else}
+													<Switch
+														state={prompt.is_active}
+														disabled
+														tooltip={$i18n.t('Read Only')}
+														ariaLabel={`${$i18n.t('Enabled')}: ${prompt.name}`}
+													/>
+												{/if}
+											</div>
+										{/if}
+									</div>
+								</div>
+							</div>
+						{/each}
+					</div>
 				</div>
-			</div>
-		{/each}
-	</div>
 
-	{#if $user?.role === 'admin'}
-		<div class=" flex justify-end w-full mb-3">
-			<div class="flex space-x-2">
-				<input
-					id="prompts-import-input"
-					bind:this={promptsImportInputElement}
-					bind:files={importFiles}
-					type="file"
-					accept=".json"
-					hidden
-					on:change={() => {
-						console.log(importFiles);
-
-						const reader = new FileReader();
-						reader.onload = async (event) => {
-							const savedPrompts = JSON.parse(event.target.result);
-							console.log(savedPrompts);
-
-							for (const prompt of savedPrompts) {
-								await createNewPrompt(
-									localStorage.token,
-									prompt.command.charAt(0) === '/' ? prompt.command.slice(1) : prompt.command,
-									prompt.title,
-									prompt.content
-								).catch((error) => {
-									toast.error(error);
-									return null;
-								});
-							}
-
-							prompts = await getPromptList(localStorage.token);
-							await _prompts.set(await getPrompts(localStorage.token));
-						};
-
-						reader.readAsText(importFiles[0]);
-					}}
-				/>
-
-				<button
-					class="flex text-xs items-center space-x-1 px-3 py-1.5 rounded-xl bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-200 transition"
-					on:click={() => {
-						promptsImportInputElement.click();
-					}}
-				>
-					<div class=" self-center mr-2 font-medium line-clamp-1">{$i18n.t('Import Prompts')}</div>
-
-					<div class=" self-center">
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 16 16"
-							fill="currentColor"
-							class="w-4 h-4"
-						>
-							<path
-								fill-rule="evenodd"
-								d="M4 2a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5V6.621a1.5 1.5 0 0 0-.44-1.06L9.94 2.439A1.5 1.5 0 0 0 8.878 2H4Zm4 9.5a.75.75 0 0 1-.75-.75V8.06l-.72.72a.75.75 0 0 1-1.06-1.06l2-2a.75.75 0 0 1 1.06 0l2 2a.75.75 0 1 1-1.06 1.06l-.72-.72v2.69a.75.75 0 0 1-.75.75Z"
-								clip-rule="evenodd"
-							/>
-						</svg>
+				{#if total > 30}
+					<div class="flex justify-center mt-4 mb-2">
+						<Pagination bind:page count={total} perPage={30} />
 					</div>
-				</button>
-
-				<button
-					class="flex text-xs items-center space-x-1 px-3 py-1.5 rounded-xl bg-gray-50 hover:bg-gray-100 dark:bg-gray-800 dark:hover:bg-gray-700 dark:text-gray-200 transition"
-					on:click={async () => {
-						// promptsImportInputElement.click();
-						let blob = new Blob([JSON.stringify(prompts)], {
-							type: 'application/json'
-						});
-						saveAs(blob, `prompts-export-${Date.now()}.json`);
-					}}
-				>
-					<div class=" self-center mr-2 font-medium line-clamp-1">{$i18n.t('Export Prompts')}</div>
-
-					<div class=" self-center">
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 16 16"
-							fill="currentColor"
-							class="w-4 h-4"
-						>
-							<path
-								fill-rule="evenodd"
-								d="M4 2a1.5 1.5 0 0 0-1.5 1.5v9A1.5 1.5 0 0 0 4 14h8a1.5 1.5 0 0 0 1.5-1.5V6.621a1.5 1.5 0 0 0-.44-1.06L9.94 2.439A1.5 1.5 0 0 0 8.878 2H4Zm4 3.5a.75.75 0 0 1 .75.75v2.69l.72-.72a.75.75 0 1 1 1.06 1.06l-2 2a.75.75 0 0 1-1.06 0l-2-2a.75.75 0 0 1 1.06-1.06l.72.72V6.25A.75.75 0 0 1 8 5.5Z"
-								clip-rule="evenodd"
-							/>
-						</svg>
+				{/if}
+			{:else}
+				<div class="flex w-full flex-col items-center justify-center py-16 pb-24">
+					<div class="max-w-sm text-center text-gray-900 dark:text-gray-100">
+						<div class="mb-1.5 text-sm">
+							{hasFilters ? $i18n.t('No prompts found') : $i18n.t('No prompts yet')}
+						</div>
+						<div class="text-center text-xs leading-5 text-gray-500">
+							{hasFilters
+								? $i18n.t('Try adjusting your search or filter to find what you are looking for.')
+								: $i18n.t('Items you create or that are shared with you will appear here.')}
+						</div>
 					</div>
-				</button>
-			</div>
+				</div>
+			{/if}
+		</div>
+
+		{#if $config?.features.enable_community_sharing}
+			<CommunityDiscover
+				href="https://openwebui.com/search?type=prompt"
+				title={$i18n.t('Discover a prompt')}
+				description={$i18n.t('Discover, download, and explore custom prompts')}
+			/>
+		{/if}
+	{:else}
+		<div class="w-full h-full flex justify-center items-center">
+			<Spinner className="size-5" />
 		</div>
 	{/if}
-
-	{#if $config?.features.enable_community_sharing}
-		<div class=" my-16">
-			<div class=" text-xl font-medium mb-1 line-clamp-1">
-				{$i18n.t('Made by OpenWebUI Community')}
-			</div>
-
-			<a
-				class=" flex cursor-pointer items-center justify-between hover:bg-gray-50 dark:hover:bg-gray-850 w-full mb-2 px-3.5 py-1.5 rounded-xl transition"
-				href="https://openwebui.com/#open-webui-community"
-				target="_blank"
-			>
-				<div class=" self-center">
-					<div class=" font-semibold line-clamp-1">{$i18n.t('Discover a prompt')}</div>
-					<div class=" text-sm line-clamp-1">
-						{$i18n.t('Discover, download, and explore custom prompts')}
-					</div>
-				</div>
-
-				<div>
-					<div>
-						<ChevronRight />
-					</div>
-				</div>
-			</a>
-		</div>
-	{/if}
-{:else}
-	<div class="w-full h-full flex justify-center items-center">
-		<Spinner />
-	</div>
-{/if}
+</Comments>

@@ -1,19 +1,23 @@
-<script>
-	import { WEBUI_BASE_URL } from '$lib/constants';
-	import { WEBUI_NAME, config, user, showSidebar } from '$lib/stores';
-	import { goto } from '$app/navigation';
-	import { onMount, getContext } from 'svelte';
+<script lang="ts">
+	import { WEBUI_API_BASE_URL } from '$lib/constants';
+	import { adminUserCount, config, user } from '$lib/stores';
+	import { getContext, onDestroy } from 'svelte';
 
 	import dayjs from 'dayjs';
 	import relativeTime from 'dayjs/plugin/relativeTime';
+	import localizedFormat from 'dayjs/plugin/localizedFormat';
 	dayjs.extend(relativeTime);
+	dayjs.extend(localizedFormat);
 
 	import { toast } from 'svelte-sonner';
 
-	import { updateUserRole, getUsers, deleteUserById } from '$lib/apis/users';
+	import { getUsers, deleteUserById } from '$lib/apis/users';
 
 	import Pagination from '$lib/components/common/Pagination.svelte';
 	import ChatBubbles from '$lib/components/icons/ChatBubbles.svelte';
+	import EditPencil from '$lib/components/icons/EditPencil.svelte';
+	import Eye from '$lib/components/icons/Eye.svelte';
+	import Trash from '$lib/components/icons/Trash.svelte';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 
 	import EditUserModal from '$lib/components/admin/Users/UserList/EditUserModal.svelte';
@@ -21,78 +25,118 @@
 	import AddUserModal from '$lib/components/admin/Users/UserList/AddUserModal.svelte';
 
 	import ConfirmDialog from '$lib/components/common/ConfirmDialog.svelte';
-	import Badge from '$lib/components/common/Badge.svelte';
-	import Plus from '$lib/components/icons/Plus.svelte';
+
+	import Search from '$lib/components/icons/Search.svelte';
+	import XMark from '$lib/components/icons/XMark.svelte';
 	import ChevronUp from '$lib/components/icons/ChevronUp.svelte';
 	import ChevronDown from '$lib/components/icons/ChevronDown.svelte';
-	import About from '$lib/components/chat/Settings/About.svelte';
+	import Banner from '$lib/components/common/Banner.svelte';
+	import Spinner from '$lib/components/common/Spinner.svelte';
+	import ProfilePreview from '$lib/components/channel/Messages/Message/ProfilePreview.svelte';
+	import UserPreviewModal from '$lib/components/admin/UserPreviewModal.svelte';
 
-	const i18n = getContext('i18n');
-
-	export let users = [];
-
-	let search = '';
-	let selectedUser = null;
+	const i18n: any = getContext('i18n');
 
 	let page = 1;
+
+	let users = null;
+	let total = null;
+
+	let query = '';
+	let searchDebounceTimer: ReturnType<typeof setTimeout>;
+	let searchController: AbortController;
+	let orderBy = 'created_at'; // default sort key
+	let direction = 'asc'; // default sort order
+
+	let selectedUser = null;
 
 	let showDeleteConfirmDialog = false;
 	let showAddUserModal = false;
 
 	let showUserChatsModal = false;
 	let showEditUserModal = false;
-
-	const updateRoleHandler = async (id, role) => {
-		const res = await updateUserRole(localStorage.token, id, role).catch((error) => {
-			toast.error(error);
-			return null;
-		});
-
-		if (res) {
-			users = await getUsers(localStorage.token);
-		}
-	};
+	let showUserPreviewModal = false;
 
 	const deleteUserHandler = async (id) => {
 		const res = await deleteUserById(localStorage.token, id).catch((error) => {
-			toast.error(error);
+			toast.error(`${error}`);
 			return null;
 		});
+
+		// if the user is deleted and the current page has only one user, go back to the previous page
+		if (users.length === 1 && page > 1) {
+			page -= 1;
+		}
+
 		if (res) {
-			users = await getUsers(localStorage.token);
+			getUserList();
 		}
 	};
 
-	let sortKey = 'created_at'; // default sort key
-	let sortOrder = 'asc'; // default sort order
+	const sortState = (key, orderBy, direction) =>
+		orderBy === key ? (direction === 'asc' ? 'ascending' : 'descending') : 'none';
 
-	function setSortKey(key) {
-		if (sortKey === key) {
-			sortOrder = sortOrder === 'asc' ? 'desc' : 'asc';
+	const setSortKey = (key) => {
+		if (orderBy === key) {
+			direction = direction === 'asc' ? 'desc' : 'asc';
 		} else {
-			sortKey = key;
-			sortOrder = 'asc';
+			orderBy = key;
+			direction = 'asc';
 		}
+	};
+
+	const roleClass = (role) => {
+		if (role === 'admin') {
+			return 'text-[#4f6f93] dark:text-[#8ba6c6]';
+		}
+		if (role === 'user') {
+			return 'text-[#4f7a5a] dark:text-[#8db395]';
+		}
+		return 'text-gray-500 dark:text-gray-400';
+	};
+
+	const getUserList = async () => {
+		searchController?.abort();
+		searchController = new AbortController();
+		const { signal } = searchController;
+		try {
+			const res = await getUsers(localStorage.token, query, orderBy, direction, page, signal).catch(
+				(error) => {
+					toast.error(`${error}`);
+					return null;
+				}
+			);
+
+			if (res && !signal.aborted) {
+				users = res.users;
+				total = res.total;
+				adminUserCount.set(total);
+			}
+		} catch (err) {
+			console.error(err);
+		}
+	};
+
+	const handleSearchInput = () => {
+		searchController?.abort();
+		clearTimeout(searchDebounceTimer);
+		searchDebounceTimer = setTimeout(() => {
+			if (page !== 1) {
+				page = 1;
+			} else {
+				getUserList();
+			}
+		}, 300);
+	};
+
+	$: if (page !== null && orderBy !== null && direction !== null) {
+		getUserList();
 	}
 
-	let filteredUsers;
-
-	$: filteredUsers = users
-		.filter((user) => {
-			if (search === '') {
-				return true;
-			} else {
-				let name = user.name.toLowerCase();
-				const query = search.toLowerCase();
-				return name.includes(query);
-			}
-		})
-		.sort((a, b) => {
-			if (a[sortKey] < b[sortKey]) return sortOrder === 'asc' ? -1 : 1;
-			if (a[sortKey] > b[sortKey]) return sortOrder === 'asc' ? 1 : -1;
-			return 0;
-		})
-		.slice((page - 1) * 20, page * 20);
+	onDestroy(() => {
+		searchController?.abort();
+		clearTimeout(searchDebounceTimer);
+	});
 </script>
 
 <ConfirmDialog
@@ -102,350 +146,439 @@
 	}}
 />
 
-{#key selectedUser}
-	<EditUserModal
-		bind:show={showEditUserModal}
-		{selectedUser}
-		sessionUser={$user}
-		on:save={async () => {
-			users = await getUsers(localStorage.token);
-		}}
-	/>
-{/key}
-
 <AddUserModal
 	bind:show={showAddUserModal}
 	on:save={async () => {
-		users = await getUsers(localStorage.token);
+		getUserList();
 	}}
 />
-<UserChatsModal bind:show={showUserChatsModal} user={selectedUser} />
 
-<div class="mt-0.5 mb-2 gap-1 flex flex-col md:flex-row justify-between">
-	<div class="flex md:self-center text-lg font-medium px-0.5">
-		{$i18n.t('Users')}
-		<div class="flex self-center w-[1px] h-6 mx-2.5 bg-gray-50 dark:bg-gray-850" />
+<EditUserModal
+	bind:show={showEditUserModal}
+	{selectedUser}
+	sessionUser={$user}
+	on:save={async () => {
+		getUserList();
+	}}
+/>
 
-		<span class="text-lg font-medium text-gray-500 dark:text-gray-300">{users.length}</span>
+{#if selectedUser}
+	<UserChatsModal bind:show={showUserChatsModal} user={selectedUser} />
+{/if}
+
+{#if ($config?.license_metadata?.seats ?? null) !== null && total && total > $config?.license_metadata?.seats}
+	<div class=" mt-1 mb-2 text-xs text-red-500">
+		<Banner
+			className="mx-0"
+			banner={{
+				type: 'error',
+				title: $i18n.t('License Error'),
+				content: $i18n.t(
+					'Exceeded the number of seats in your license. Please contact support to increase the number of seats.'
+				)
+			}}
+		/>
 	</div>
+{/if}
 
-	<div class="flex gap-1">
-		<div class=" flex w-full space-x-2">
-			<div class="flex flex-1">
-				<div class=" self-center ml-1 mr-3">
-					<svg
-						xmlns="http://www.w3.org/2000/svg"
-						viewBox="0 0 20 20"
-						fill="currentColor"
-						class="w-4 h-4"
-					>
-						<path
-							fill-rule="evenodd"
-							d="M9 3.5a5.5 5.5 0 100 11 5.5 5.5 0 000-11zM2 9a7 7 0 1112.452 4.391l3.328 3.329a.75.75 0 11-1.06 1.06l-3.329-3.328A7 7 0 012 9z"
-							clip-rule="evenodd"
-						/>
-					</svg>
+{#if users === null || total === null}
+	<div class="my-10">
+		<Spinner className="size-5" />
+	</div>
+{:else}
+	<div class="sticky top-0 z-10 bg-white dark:bg-gray-900">
+		<div class="flex h-8 flex-1 items-center w-full gap-2">
+			<div class="flex min-w-0 flex-1 items-center">
+				<div class="self-center ml-1 mr-3">
+					<Search className="size-3.5" />
 				</div>
 				<input
-					class=" w-full text-sm pr-4 py-1 rounded-r-xl outline-none bg-transparent"
-					bind:value={search}
+					class="w-full text-sm pr-4 py-1 rounded-r-xl outline-hidden bg-transparent"
+					bind:value={query}
+					on:input={handleSearchInput}
+					aria-label={$i18n.t('Search')}
 					placeholder={$i18n.t('Search')}
 				/>
-			</div>
 
-			<div>
-				<Tooltip content={$i18n.t('Add User')}>
-					<button
-						class=" p-2 rounded-xl hover:bg-gray-100 dark:bg-gray-900 dark:hover:bg-gray-850 transition font-medium text-sm flex items-center space-x-1"
-						on:click={() => {
-							showAddUserModal = !showAddUserModal;
-						}}
-					>
-						<Plus className="size-3.5" />
-					</button>
-				</Tooltip>
-			</div>
-		</div>
-	</div>
-</div>
-
-<div class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full rounded pt-0.5">
-	<table
-		class="w-full text-sm text-left text-gray-500 dark:text-gray-400 table-auto max-w-full rounded"
-	>
-		<thead
-			class="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-850 dark:text-gray-400 -translate-y-0.5"
-		>
-			<tr class="">
-				<th
-					scope="col"
-					class="px-3 py-1.5 cursor-pointer select-none"
-					on:click={() => setSortKey('role')}
-				>
-					<div class="flex gap-1.5 items-center">
-						{$i18n.t('Role')}
-
-						{#if sortKey === 'role'}
-							<span class="font-normal"
-								>{#if sortOrder === 'asc'}
-									<ChevronUp className="size-2" />
-								{:else}
-									<ChevronDown className="size-2" />
-								{/if}
-							</span>
-						{:else}
-							<span class="invisible">
-								<ChevronUp className="size-2" />
-							</span>
-						{/if}
-					</div>
-				</th>
-				<th
-					scope="col"
-					class="px-3 py-1.5 cursor-pointer select-none"
-					on:click={() => setSortKey('name')}
-				>
-					<div class="flex gap-1.5 items-center">
-						{$i18n.t('Name')}
-
-						{#if sortKey === 'name'}
-							<span class="font-normal"
-								>{#if sortOrder === 'asc'}
-									<ChevronUp className="size-2" />
-								{:else}
-									<ChevronDown className="size-2" />
-								{/if}
-							</span>
-						{:else}
-							<span class="invisible">
-								<ChevronUp className="size-2" />
-							</span>
-						{/if}
-					</div>
-				</th>
-				<th
-					scope="col"
-					class="px-3 py-1.5 cursor-pointer select-none"
-					on:click={() => setSortKey('email')}
-				>
-					<div class="flex gap-1.5 items-center">
-						{$i18n.t('Email')}
-
-						{#if sortKey === 'email'}
-							<span class="font-normal"
-								>{#if sortOrder === 'asc'}
-									<ChevronUp className="size-2" />
-								{:else}
-									<ChevronDown className="size-2" />
-								{/if}
-							</span>
-						{:else}
-							<span class="invisible">
-								<ChevronUp className="size-2" />
-							</span>
-						{/if}
-					</div>
-				</th>
-
-				<th
-					scope="col"
-					class="px-3 py-1.5 cursor-pointer select-none"
-					on:click={() => setSortKey('last_active_at')}
-				>
-					<div class="flex gap-1.5 items-center">
-						{$i18n.t('Last Active')}
-
-						{#if sortKey === 'last_active_at'}
-							<span class="font-normal"
-								>{#if sortOrder === 'asc'}
-									<ChevronUp className="size-2" />
-								{:else}
-									<ChevronDown className="size-2" />
-								{/if}
-							</span>
-						{:else}
-							<span class="invisible">
-								<ChevronUp className="size-2" />
-							</span>
-						{/if}
-					</div>
-				</th>
-				<th
-					scope="col"
-					class="px-3 py-1.5 cursor-pointer select-none"
-					on:click={() => setSortKey('created_at')}
-				>
-					<div class="flex gap-1.5 items-center">
-						{$i18n.t('Created at')}
-						{#if sortKey === 'created_at'}
-							<span class="font-normal"
-								>{#if sortOrder === 'asc'}
-									<ChevronUp className="size-2" />
-								{:else}
-									<ChevronDown className="size-2" />
-								{/if}
-							</span>
-						{:else}
-							<span class="invisible">
-								<ChevronUp className="size-2" />
-							</span>
-						{/if}
-					</div>
-				</th>
-
-				<th
-					scope="col"
-					class="px-3 py-1.5 cursor-pointer select-none"
-					on:click={() => setSortKey('oauth_sub')}
-				>
-					<div class="flex gap-1.5 items-center">
-						{$i18n.t('OAuth ID')}
-
-						{#if sortKey === 'oauth_sub'}
-							<span class="font-normal"
-								>{#if sortOrder === 'asc'}
-									<ChevronUp className="size-2" />
-								{:else}
-									<ChevronDown className="size-2" />
-								{/if}
-							</span>
-						{:else}
-							<span class="invisible">
-								<ChevronUp className="size-2" />
-							</span>
-						{/if}
-					</div>
-				</th>
-
-				<th scope="col" class="px-3 py-2 text-right" />
-			</tr>
-		</thead>
-		<tbody class="">
-			{#each filteredUsers as user, userIdx}
-				<tr class="bg-white dark:bg-gray-900 dark:border-gray-850 text-xs">
-					<td class="px-3 py-1 min-w-[7rem] w-28">
+				{#if query}
+					<div class="self-center pl-1.5 translate-y-[0.5px] rounded-l-xl bg-transparent">
 						<button
-							class=" translate-y-0.5"
+							class="py-0.5 rounded-full transition hover:text-gray-900 dark:hover:text-gray-100 text-gray-500 dark:text-gray-400 px-0"
+							aria-label={$i18n.t('Clear search')}
 							on:click={() => {
-								if (user.role === 'user') {
-									updateRoleHandler(user.id, 'admin');
-								} else if (user.role === 'pending') {
-									updateRoleHandler(user.id, 'user');
-								} else {
-									updateRoleHandler(user.id, 'pending');
-								}
+								query = '';
+								handleSearchInput();
 							}}
 						>
-							<Badge
-								type={user.role === 'admin' ? 'info' : user.role === 'user' ? 'success' : 'muted'}
-								content={$i18n.t(user.role)}
-							/>
+							<XMark className="size-3" strokeWidth="2" />
 						</button>
-					</td>
-					<td class="px-3 py-1 font-medium text-gray-900 dark:text-white w-max">
-						<div class="flex flex-row w-max">
-							<img
-								class=" rounded-full w-6 h-6 object-cover mr-2.5"
-								src={user.profile_image_url.startsWith(WEBUI_BASE_URL) ||
-								user.profile_image_url.startsWith('https://www.gravatar.com/avatar/') ||
-								user.profile_image_url.startsWith('data:')
-									? user.profile_image_url
-									: `/user.png`}
-								alt="user"
-							/>
+					</div>
+				{/if}
+			</div>
 
-							<div class=" font-medium self-center">{user.name}</div>
-						</div>
-					</td>
-					<td class=" px-3 py-1"> {user.email} </td>
+			<button
+				class="ml-1 shrink-0 rounded-lg bg-gray-50 px-2.5 py-1 text-xs text-gray-900 transition ring-1 ring-gray-200 hover:bg-gray-100 dark:bg-gray-850 dark:text-gray-100 dark:ring-gray-800 dark:hover:bg-gray-800"
+				on:click={() => {
+					showAddUserModal = !showAddUserModal;
+				}}
+			>
+				{$i18n.t('Add User')}
+			</button>
+		</div>
+	</div>
 
-					<td class=" px-3 py-1">
-						{dayjs(user.last_active_at * 1000).fromNow()}
-					</td>
+	<div class="scrollbar-hidden relative whitespace-nowrap overflow-x-auto max-w-full">
+		<table class="w-full text-sm text-left text-gray-500 dark:text-gray-400 table-auto max-w-full">
+			<thead class="text-xs text-gray-800 uppercase bg-transparent dark:text-gray-200">
+				<tr class=" border-b-[1.5px] border-gray-50 dark:border-gray-850/30">
+					<th
+						scope="col"
+						class="font-normal select-none"
+						aria-sort={sortState('name', orderBy, direction)}
+					>
+						<button
+							type="button"
+							class="flex w-full gap-1.5 items-center px-2.5 py-1.5"
+							on:click={() => setSortKey('name')}
+						>
+							{$i18n.t('Name')}
 
-					<td class=" px-3 py-1">
-						{dayjs(user.created_at * 1000).format($i18n.t('MMMM DD, YYYY'))}
-					</td>
-
-					<td class=" px-3 py-1"> {user.oauth_sub ?? ''} </td>
-
-					<td class="px-3 py-1 text-right">
-						<div class="flex justify-end w-full">
-							{#if $config.features.enable_admin_chat_access && user.role !== 'admin'}
-								<Tooltip content={$i18n.t('Chats')}>
-									<button
-										class="self-center w-fit text-sm px-2 py-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-										on:click={async () => {
-											showUserChatsModal = !showUserChatsModal;
-											selectedUser = user;
-										}}
-									>
-										<ChatBubbles />
-									</button>
-								</Tooltip>
+							{#if orderBy === 'name'}
+								<span class="font-normal"
+									>{#if direction === 'asc'}
+										<ChevronUp className="size-2" />
+									{:else}
+										<ChevronDown className="size-2" />
+									{/if}
+								</span>
+							{:else}
+								<span class="invisible">
+									<ChevronUp className="size-2" />
+								</span>
 							{/if}
+						</button>
+					</th>
+					<th
+						scope="col"
+						class="font-normal select-none"
+						aria-sort={sortState('role', orderBy, direction)}
+					>
+						<button
+							type="button"
+							class="flex w-full gap-1.5 items-center px-2.5 py-1.5"
+							on:click={() => setSortKey('role')}
+						>
+							{$i18n.t('Role')}
 
-							<Tooltip content={$i18n.t('Edit User')}>
-								<button
-									class="self-center w-fit text-sm px-2 py-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-									on:click={async () => {
-										showEditUserModal = !showEditUserModal;
-										selectedUser = user;
-									}}
-								>
-									<svg
-										xmlns="http://www.w3.org/2000/svg"
-										fill="none"
-										viewBox="0 0 24 24"
-										stroke-width="1.5"
-										stroke="currentColor"
-										class="w-4 h-4"
-									>
-										<path
-											stroke-linecap="round"
-											stroke-linejoin="round"
-											d="m16.862 4.487 1.687-1.688a1.875 1.875 0 1 1 2.652 2.652L6.832 19.82a4.5 4.5 0 0 1-1.897 1.13l-2.685.8.8-2.685a4.5 4.5 0 0 1 1.13-1.897L16.863 4.487Zm0 0L19.5 7.125"
-										/>
-									</svg>
-								</button>
-							</Tooltip>
-
-							{#if user.role !== 'admin'}
-								<Tooltip content={$i18n.t('Delete User')}>
-									<button
-										class="self-center w-fit text-sm px-2 py-2 hover:bg-black/5 dark:hover:bg-white/5 rounded-xl"
-										on:click={async () => {
-											showDeleteConfirmDialog = true;
-											selectedUser = user;
-										}}
-									>
-										<svg
-											xmlns="http://www.w3.org/2000/svg"
-											fill="none"
-											viewBox="0 0 24 24"
-											stroke-width="1.5"
-											stroke="currentColor"
-											class="w-4 h-4"
-										>
-											<path
-												stroke-linecap="round"
-												stroke-linejoin="round"
-												d="m14.74 9-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 0 1-2.244 2.077H8.084a2.25 2.25 0 0 1-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 0 0-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 0 1 3.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 0 0-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 0 0-7.5 0"
-											/>
-										</svg>
-									</button>
-								</Tooltip>
+							{#if orderBy === 'role'}
+								<span class="font-normal"
+									>{#if direction === 'asc'}
+										<ChevronUp className="size-2" />
+									{:else}
+										<ChevronDown className="size-2" />
+									{/if}
+								</span>
+							{:else}
+								<span class="invisible">
+									<ChevronUp className="size-2" />
+								</span>
 							{/if}
-						</div>
-					</td>
+						</button>
+					</th>
+					<th
+						scope="col"
+						class="font-normal select-none"
+						aria-sort={sortState('email', orderBy, direction)}
+					>
+						<button
+							type="button"
+							class="flex w-full gap-1.5 items-center px-2.5 py-1.5"
+							on:click={() => setSortKey('email')}
+						>
+							{$i18n.t('Email')}
+
+							{#if orderBy === 'email'}
+								<span class="font-normal"
+									>{#if direction === 'asc'}
+										<ChevronUp className="size-2" />
+									{:else}
+										<ChevronDown className="size-2" />
+									{/if}
+								</span>
+							{:else}
+								<span class="invisible">
+									<ChevronUp className="size-2" />
+								</span>
+							{/if}
+						</button>
+					</th>
+
+					<th
+						scope="col"
+						class="font-normal select-none"
+						aria-sort={sortState('last_active_at', orderBy, direction)}
+					>
+						<button
+							type="button"
+							class="flex w-full gap-1.5 items-center px-2.5 py-1.5"
+							on:click={() => setSortKey('last_active_at')}
+						>
+							{$i18n.t('Last Active')}
+							<!-- {$i18n.t('Last Modified')} -->
+
+							{#if orderBy === 'last_active_at'}
+								<span class="font-normal"
+									>{#if direction === 'asc'}
+										<ChevronUp className="size-2" />
+									{:else}
+										<ChevronDown className="size-2" />
+									{/if}
+								</span>
+							{:else}
+								<span class="invisible">
+									<ChevronUp className="size-2" />
+								</span>
+							{/if}
+						</button>
+					</th>
+					<th
+						scope="col"
+						class="font-normal select-none"
+						aria-sort={sortState('created_at', orderBy, direction)}
+					>
+						<button
+							type="button"
+							class="flex w-full gap-1.5 items-center px-2.5 py-1.5"
+							on:click={() => setSortKey('created_at')}
+						>
+							{$i18n.t('Created at')}
+							{#if orderBy === 'created_at'}
+								<span class="font-normal"
+									>{#if direction === 'asc'}
+										<ChevronUp className="size-2" />
+									{:else}
+										<ChevronDown className="size-2" />
+									{/if}
+								</span>
+							{:else}
+								<span class="invisible">
+									<ChevronUp className="size-2" />
+								</span>
+							{/if}
+						</button>
+					</th>
+
+					<th scope="col" class="px-2.5 py-1.5 font-normal text-right"
+						><span class="sr-only">{$i18n.t('Actions')}</span></th
+					>
 				</tr>
-			{/each}
-		</tbody>
-	</table>
-</div>
+			</thead>
+			<tbody class="">
+				{#each users as user (user.id)}
+					<tr class="dark:border-gray-850 text-xs">
+						<td class="px-3 py-1 font-normal text-gray-900 dark:text-white max-w-48">
+							<div class="flex items-center gap-2">
+								<ProfilePreview {user} side="right" align="center" sideOffset={6}>
+									<img
+										class="rounded-full size-5.5 object-cover flex-shrink-0"
+										src={`${WEBUI_API_BASE_URL}/users/${user.id}/profile/image`}
+										alt="user"
+										on:error={(e) => {
+											// LICENSE covers this Open WebUI fallback logo.
+											// Do not alter, remove, obscure, or replace it except as LICENSE permits:
+											// https://docs.openwebui.com/license.
+											e.currentTarget.src = '/favicon.png';
+										}}
+									/>
+								</ProfilePreview>
 
-<div class=" text-gray-500 text-xs mt-1.5 text-right">
-	ⓘ {$i18n.t("Click on the user role button to change a user's role.")}
-</div>
+								<div class="font-normal truncate">{user.name}</div>
 
-<Pagination bind:page count={users.length} />
+								{#if user?.last_active_at && Date.now() / 1000 - user.last_active_at < 180}
+									<div>
+										<span class="relative flex size-1.5">
+											<span
+												class="absolute inline-flex h-full w-full animate-ping rounded-full bg-green-400 opacity-75"
+											></span>
+											<span class="relative inline-flex size-1.5 rounded-full bg-green-500"></span>
+										</span>
+									</div>
+								{/if}
+							</div>
+						</td>
+						<td class="px-3 py-1 min-w-[5rem] w-20">
+							<button
+								class="text-xs font-normal leading-4 capitalize transition {roleClass(user.role)}"
+								on:click={() => {
+									selectedUser = user;
+									showEditUserModal = !showEditUserModal;
+								}}
+							>
+								<span class="sr-only">{$i18n.t('Change User Role')}</span>
+								{$i18n.t(user.role)}
+							</button>
+						</td>
+						<td class=" px-3 py-1 max-w-48 truncate"> {user.email} </td>
+
+						<td class=" px-3 py-1">
+							<Tooltip
+								content={new Date(user.last_active_at * 1000).toLocaleString($i18n.language, {
+									dateStyle: 'medium',
+									timeStyle: 'long'
+								})}
+							>
+								{dayjs(user.last_active_at * 1000)
+									.locale($i18n.language)
+									.fromNow()}
+							</Tooltip>
+						</td>
+
+						<td class=" px-3 py-1">
+							{dayjs(user.created_at * 1000)
+								.locale($i18n.language)
+								.format('LL')}
+						</td>
+
+						<td class="px-3 py-1 text-right">
+							<div class="flex justify-end w-full">
+								{#if $config.features.enable_admin_chat_access && user.role !== 'admin'}
+									<Tooltip content={$i18n.t('Chats')}>
+										<button
+											class="self-center w-fit p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg"
+											aria-label={$i18n.t('Chats')}
+											on:click={async () => {
+												showUserChatsModal = !showUserChatsModal;
+												selectedUser = user;
+											}}
+										>
+											<ChatBubbles className="size-3.5" />
+										</button>
+									</Tooltip>
+								{/if}
+
+								{#if user.role !== 'admin'}
+									<Tooltip content={$i18n.t('Preview Access')}>
+										<button
+											class="self-center w-fit p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg"
+											aria-label={$i18n.t('Preview Access')}
+											on:click={() => {
+												selectedUser = user;
+												showUserPreviewModal = true;
+											}}
+										>
+											<Eye className="size-3.5" />
+										</button>
+									</Tooltip>
+								{/if}
+
+								<Tooltip content={$i18n.t('Edit User')}>
+									<button
+										class="self-center w-fit p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg"
+										aria-label={$i18n.t('Edit User')}
+										on:click={async () => {
+											showEditUserModal = !showEditUserModal;
+											selectedUser = user;
+										}}
+									>
+										<EditPencil className="size-3.5" />
+									</button>
+								</Tooltip>
+
+								{#if user.role !== 'admin'}
+									<Tooltip content={$i18n.t('Delete User')}>
+										<button
+											class="self-center w-fit p-1.5 hover:bg-black/5 dark:hover:bg-white/5 rounded-lg"
+											aria-label={$i18n.t('Delete User')}
+											on:click={async () => {
+												showDeleteConfirmDialog = true;
+												selectedUser = user;
+											}}
+										>
+											<Trash className="size-3.5" />
+										</button>
+									</Tooltip>
+								{/if}
+							</div>
+						</td>
+					</tr>
+				{/each}
+			</tbody>
+		</table>
+	</div>
+
+	<div class=" text-gray-500 text-xs mt-1.5 text-right">
+		ⓘ {$i18n.t("Click on the user role button to change a user's role.")}
+	</div>
+
+	{#if total > 30}
+		<Pagination bind:page count={total} perPage={30} />
+	{/if}
+{/if}
+
+{#if !$config?.license_metadata}
+	{#if total > 50}
+		<!-- LICENSE covers the Open WebUI branding narrative here.
+		Do not alter, remove, obscure, or replace it except as LICENSE permits:
+		https://docs.openwebui.com/license. -->
+		<div class="mt-3 mb-3 pb-1 text-gray-700 dark:text-gray-300">
+			<div class="max-w-3xl text-xs leading-5">
+				<div class="text-gray-900 dark:text-gray-100">
+					<!-- LICENSE covers this Open WebUI wordmark.
+					Do not alter, remove, obscure, or replace it except as LICENSE permits:
+					https://docs.openwebui.com/license. -->
+					{$i18n.t('Running Open WebUI for a team?')}
+				</div>
+				<div class="mt-2 space-y-2">
+					<p>
+						<!-- LICENSE covers this Open WebUI branding copy.
+						Do not alter, remove, obscure, or replace it except as LICENSE permits:
+						https://docs.openwebui.com/license. -->
+						{$i18n.t(
+							'You have more than 50 users, which often means this workspace is supporting organizational use. Open WebUI is free to use as-is, with no restrictions or hidden limits, and we want to keep it that way.'
+						)}
+					</p>
+					<p class="text-gray-500 dark:text-gray-400">
+						<!-- LICENSE covers this Open WebUI branding copy.
+						Do not alter, remove, obscure, or replace it except as LICENSE permits:
+						https://docs.openwebui.com/license. -->
+						{$i18n.t(
+							'By supporting the project through sponsorship or an enterprise license, you help us stay independent, ship new features faster, improve stability, and grow Open WebUI for the long haul.'
+						)}
+					</p>
+					<p class="text-gray-500 dark:text-gray-400">
+						{$i18n.t(
+							'Enterprise licenses also include dedicated support, customization options, and more, at a fraction of the cost of building and maintaining this stack internally.'
+						)}
+					</p>
+				</div>
+
+				<div class="mt-2 flex items-center gap-3">
+					<a
+						class="text-xs text-gray-700 underline transition hover:text-gray-900 dark:text-gray-300 dark:hover:text-gray-100"
+						href="https://docs.openwebui.com/enterprise"
+						target="_blank"
+						rel="noreferrer"
+					>
+						{$i18n.t('Enterprise licensing')}
+					</a>
+					<a
+						class="text-xs text-gray-500 underline transition hover:text-gray-900 dark:text-gray-500 dark:hover:text-gray-100"
+						href="https://github.com/sponsors/open-webui"
+						target="_blank"
+						rel="noreferrer"
+					>
+						{$i18n.t('Sponsor on GitHub')}
+					</a>
+				</div>
+			</div>
+		</div>
+	{/if}
+{/if}
+
+{#if selectedUser}
+	<UserPreviewModal
+		bind:show={showUserPreviewModal}
+		userId={selectedUser.id}
+		userName={selectedUser.name}
+	/>
+{/if}

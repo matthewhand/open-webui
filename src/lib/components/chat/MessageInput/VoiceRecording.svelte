@@ -1,17 +1,29 @@
 <script lang="ts">
 	import { toast } from 'svelte-sonner';
-	import { createEventDispatcher, tick, getContext, onMount, onDestroy } from 'svelte';
+	import { tick, getContext, onMount, onDestroy } from 'svelte';
 	import { config, settings } from '$lib/stores';
-	import { blobToFile, calculateSHA256, findWordIndices } from '$lib/utils';
+	import { blobToFile, calculateSHA256, extractCurlyBraceWords } from '$lib/utils';
 
 	import { transcribeAudio } from '$lib/apis/audio';
+	import XMark from '$lib/components/icons/XMark.svelte';
 
-	const i18n = getContext('i18n');
+	import dayjs from 'dayjs';
 
-	const dispatch = createEventDispatcher();
+	const i18n = getContext<typeof import('$lib/i18n').default>('i18n');
 
 	export let recording = false;
+	export let transcribe = true;
+	export let displayMedia = false;
+
+	export let echoCancellation = true;
+	export let noiseSuppression = true;
+	export let autoGainControl = true;
+
 	export let className = ' p-2.5 w-full max-w-full';
+
+	export let confirmButtonId = 'confirm-recording-button';
+	export let onCancel = () => {};
+	export let onConfirm = (data) => {};
 
 	let loading = false;
 	let confirmed = false;
@@ -45,7 +57,36 @@
 		return `${minutes}:${formattedSeconds}`;
 	};
 
+	let wakeLock = null;
+
+	const requestWakeLock = async () => {
+		if ('wakeLock' in navigator) {
+			try {
+				wakeLock = await navigator.wakeLock.request('screen');
+				console.log('Wake Lock acquired');
+
+				wakeLock.addEventListener('release', () => {
+					console.log('Wake Lock released');
+				});
+			} catch (err) {
+				console.log('Wake Lock request failed:', err);
+			}
+		}
+	};
+
+	const releaseWakeLock = async () => {
+		if (wakeLock) {
+			try {
+				await wakeLock.release();
+			} catch (err) {
+				console.log('Wake Lock release failed:', err);
+			}
+			wakeLock = null;
+		}
+	};
+
 	let stream;
+	let audioContext: AudioContext | null = null;
 	let speechRecognition;
 
 	let mediaRecorder;
@@ -75,8 +116,14 @@
 		return Math.min(1.0, Math.max(0.01, scaledRMS));
 	};
 
+	// Chrome on Android caps open audio outputs at 10.
+	const closeAudioContext = () => {
+		void audioContext?.close();
+		audioContext = null;
+	};
+
 	const analyseAudio = (stream) => {
-		const audioContext = new AudioContext();
+		audioContext = new AudioContext();
 		const audioStreamSource = audioContext.createMediaStreamSource(stream);
 
 		const analyser = audioContext.createAnalyser();
@@ -113,12 +160,6 @@
 					// if (domainData.some((value) => value > 0)) {
 					// 	lastSoundTime = Date.now();
 					// }
-
-					// if (recording && Date.now() - lastSoundTime > 3000) {
-					// 	if ($settings?.speechAutoSend ?? false) {
-					// 		confirmRecording();
-					// 	}
-					// }
 				}
 
 				window.requestAnimationFrame(processFrame);
@@ -130,120 +171,213 @@
 		detectSound();
 	};
 
-	const transcribeHandler = async (audioBlob) => {
+	const onStopHandler = async (audioBlob, ext: string = 'wav') => {
 		// Create a blob from the audio chunks
 
 		await tick();
-		const file = blobToFile(audioBlob, 'recording.wav');
+		const file = blobToFile(audioBlob, `Recording-${dayjs().format('YYYY-MM-DD HH-mm-ss')}.${ext}`);
 
-		const res = await transcribeAudio(localStorage.token, file).catch((error) => {
-			toast.error(error);
-			return null;
-		});
+		if (transcribe) {
+			if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
+				// with web stt, we don't need to send the file to the server
+				return;
+			}
 
-		if (res) {
-			console.log(res);
-			dispatch('confirm', res);
+			const res = await transcribeAudio(
+				localStorage.token,
+				file,
+				$settings?.audio?.stt?.language
+			).catch((error) => {
+				toast.error(`${error}`);
+				return null;
+			});
+
+			if (res) {
+				console.log(res);
+				onConfirm(res);
+			}
+		} else {
+			onConfirm({
+				file: file,
+				blob: audioBlob
+			});
 		}
 	};
 
-	const saveRecording = (blob) => {
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement('a');
-		document.body.appendChild(a);
-		a.style = 'display: none';
-		a.href = url;
-		a.download = 'recording.wav';
-		a.click();
-		window.URL.revokeObjectURL(url);
-	};
-
 	const startRecording = async () => {
-		startDurationCounter();
+		loading = true;
 
-		stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-		mediaRecorder = new MediaRecorder(stream);
-		mediaRecorder.onstart = () => {
+		try {
+			if (displayMedia) {
+				const mediaStream = await navigator.mediaDevices.getDisplayMedia({
+					audio: true
+				});
+
+				stream = new MediaStream();
+				for (const track of mediaStream.getAudioTracks()) {
+					stream.addTrack(track);
+				}
+
+				for (const track of mediaStream.getVideoTracks()) {
+					track.stop();
+				}
+			} else {
+				stream = await navigator.mediaDevices.getUserMedia({
+					audio: {
+						echoCancellation: echoCancellation,
+						noiseSuppression: noiseSuppression,
+						autoGainControl: autoGainControl
+					}
+				});
+			}
+		} catch (err) {
+			console.error('Error accessing media devices.', err);
+			toast.error($i18n.t('Error accessing media devices.'));
+			loading = false;
+			recording = false;
+			return;
+		}
+
+		const mineTypes = [
+			'audio/webm; codecs=opus',
+			'audio/webm',
+			'audio/ogg; codecs=opus',
+			'audio/mp4',
+			'audio/wav'
+		];
+
+		mediaRecorder = new MediaRecorder(stream, {
+			mimeType: mineTypes.find((type) => MediaRecorder.isTypeSupported(type))
+		});
+
+		mediaRecorder.onstart = async () => {
 			console.log('Recording started');
+			loading = false;
+			startDurationCounter();
+
+			if (document.activeElement === document.body || !document.activeElement?.checkVisibility()) {
+				await tick();
+				document.getElementById(confirmButtonId)?.focus();
+			}
+
+			await requestWakeLock();
+
 			audioChunks = [];
 			analyseAudio(stream);
 		};
 		mediaRecorder.ondataavailable = (event) => audioChunks.push(event.data);
 		mediaRecorder.onstop = async () => {
 			console.log('Recording stopped');
-			if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
-				audioChunks = [];
-			} else {
-				if (confirmed) {
-					const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
 
-					await transcribeHandler(audioBlob);
+			if (confirmed) {
+				// Use the actual type provided by MediaRecorder
+				let type = audioChunks[0]?.type || mediaRecorder.mimeType || 'audio/webm';
 
-					confirmed = false;
-					loading = false;
+				// split `/` and `;` to get the extension
+				let ext = type.split('/')[1].split(';')[0] || 'webm';
+
+				// If not audio, default to audio/webm
+				if (!type.startsWith('audio/')) {
+					ext = 'webm';
 				}
-				audioChunks = [];
-				recording = false;
+
+				const audioBlob = new Blob(audioChunks, { type: type });
+				await onStopHandler(audioBlob, ext);
+
+				confirmed = false;
+				loading = false;
 			}
+
+			audioChunks = [];
+			recording = false;
 		};
-		mediaRecorder.start();
-		if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
-			if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
-				// Create a SpeechRecognition object
-				speechRecognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
 
-				// Set continuous to true for continuous recognition
-				speechRecognition.continuous = true;
+		try {
+			mediaRecorder.start();
+		} catch (error) {
+			console.error('Error starting recording:', error);
+			toast.error($i18n.t('Error starting recording.'));
+			loading = false;
+			recording = false;
+			return;
+		}
 
-				// Set the timeout for turning off the recognition after inactivity (in milliseconds)
-				const inactivityTimeout = 2000; // 3 seconds
+		if (transcribe) {
+			if ($config.audio.stt.engine === 'web' || ($settings?.audio?.stt?.engine ?? '') === 'web') {
+				if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+					// reset accumulated transcription from previous sessions
+					transcription = '';
 
-				let timeoutId;
-				// Start recognition
-				speechRecognition.start();
+					// Create a SpeechRecognition object
+					speechRecognition = new (window.SpeechRecognition || window.webkitSpeechRecognition)();
 
-				// Event triggered when speech is recognized
-				speechRecognition.onresult = async (event) => {
-					// Clear the inactivity timeout
-					clearTimeout(timeoutId);
+					// Set continuous to true for continuous recognition
+					speechRecognition.continuous = true;
+					// Interim results keep the inactivity timeout from firing mid-sentence
+					speechRecognition.interimResults = true;
 
-					// Handle recognized speech
-					console.log(event);
-					const transcript = event.results[Object.keys(event.results).length - 1][0].transcript;
+					// Set the timeout for turning off the recognition after inactivity (in milliseconds)
+					const inactivityTimeout = 2000; // 3 seconds
 
-					transcription = `${transcription}${transcript}`;
+					let timeoutId;
+					// Start recognition
+					speechRecognition.start();
 
-					await tick();
-					document.getElementById('chat-input')?.focus();
+					// Event triggered when speech is recognized
+					speechRecognition.onresult = async (event) => {
+						// Clear the inactivity timeout
+						clearTimeout(timeoutId);
 
-					// Restart the inactivity timeout
-					timeoutId = setTimeout(() => {
-						console.log('Speech recognition turned off due to inactivity.');
-						speechRecognition.stop();
-					}, inactivityTimeout);
-				};
+						// Handle recognized speech
+						console.log(event);
+						for (const result of Array.from(event.results).slice(event.resultIndex)) {
+							if (result.isFinal) {
+								transcription = `${transcription}${result[0].transcript}`;
+							}
+						}
 
-				// Event triggered when recognition is ended
-				speechRecognition.onend = function () {
-					// Restart recognition after it ends
-					console.log('recognition ended');
+						await tick();
+						document.getElementById('chat-input')?.focus();
 
-					confirmRecording();
-					dispatch('confirm', { text: transcription });
-					confirmed = false;
-					loading = false;
-				};
+						// Restart the inactivity timeout
+						timeoutId = setTimeout(() => {
+							console.log('Speech recognition turned off due to inactivity.');
+							speechRecognition.stop();
+						}, inactivityTimeout);
+					};
 
-				// Event triggered when an error occurs
-				speechRecognition.onerror = function (event) {
-					console.log(event);
-					toast.error($i18n.t(`Speech recognition error: {{error}}`, { error: event.error }));
-					dispatch('cancel');
+					// Event triggered when recognition is ended
+					speechRecognition.onend = function () {
+						// Restart recognition after it ends
+						console.log('recognition ended');
 
-					stopRecording();
-				};
+						confirmRecording();
+						onConfirm({
+							text: transcription
+						});
+						confirmed = false;
+						loading = false;
+					};
+
+					// Event triggered when an error occurs
+					speechRecognition.onerror = function (event) {
+						console.log(event);
+						toast.error($i18n.t(`Speech recognition error: {{error}}`, { error: event.error }));
+						onCancel();
+
+						cancelRecording();
+					};
+				}
 			}
 		}
+	};
+
+	const cancelRecording = async () => {
+		if (speechRecognition) {
+			// detach onend so cancelling does not confirm the transcription
+			speechRecognition.onend = null;
+		}
+		await stopRecording();
 	};
 
 	const stopRecording = async () => {
@@ -255,8 +389,11 @@
 			speechRecognition.stop();
 		}
 
+		await releaseWakeLock();
+
 		stopDurationCounter();
 		audioChunks = [];
+		visualizerData = Array(VISUALIZER_BUFFER_LENGTH).fill(0);
 
 		if (stream) {
 			const tracks = stream.getTracks();
@@ -264,6 +401,7 @@
 		}
 
 		stream = null;
+		closeAudioContext();
 	};
 
 	const confirmRecording = async () => {
@@ -275,12 +413,15 @@
 		}
 		clearInterval(durationCounter);
 
+		await releaseWakeLock();
+
 		if (stream) {
 			const tracks = stream.getTracks();
 			tracks.forEach((track) => track.stop());
 		}
 
 		stream = null;
+		closeAudioContext();
 	};
 
 	let resizeObserver;
@@ -289,7 +430,25 @@
 	let maxVisibleItems = 300;
 	$: maxVisibleItems = Math.floor(containerWidth / 5); // 2px width + 0.5px gap
 
+	let containerElement: HTMLDivElement;
+	const handleKeyDown = (e) => {
+		if (recording && e.key === 'Escape' && containerElement?.getClientRects().length) {
+			e.preventDefault();
+			cancelRecording();
+			onCancel();
+		}
+	};
+
+	const handleVisibilityChange = async () => {
+		if (recording && document.visibilityState === 'visible') {
+			await requestWakeLock();
+		}
+	};
+
 	onMount(() => {
+		window.addEventListener('keydown', handleKeyDown);
+		document.addEventListener('visibilitychange', handleVisibilityChange);
+
 		// listen to width changes
 		resizeObserver = new ResizeObserver(() => {
 			VISUALIZER_BUFFER_LENGTH = Math.floor(window.innerWidth / 4);
@@ -306,12 +465,18 @@
 	});
 
 	onDestroy(() => {
+		window.removeEventListener('keydown', handleKeyDown);
+		document.removeEventListener('visibilitychange', handleVisibilityChange);
+		stopRecording();
+		releaseWakeLock();
+		closeAudioContext();
 		// remove resize observer
 		resizeObserver.disconnect();
 	});
 </script>
 
 <div
+	bind:this={containerElement}
 	bind:clientWidth={containerWidth}
 	class="{loading
 		? ' bg-gray-100/50 dark:bg-gray-850/50'
@@ -328,21 +493,13 @@
 
 
              rounded-full"
+			aria-label={$i18n.t('Cancel')}
 			on:click={async () => {
-				stopRecording();
-				dispatch('cancel');
+				cancelRecording();
+				onCancel();
 			}}
 		>
-			<svg
-				xmlns="http://www.w3.org/2000/svg"
-				fill="none"
-				viewBox="0 0 24 24"
-				stroke-width="3"
-				stroke="currentColor"
-				class="size-4"
-			>
-				<path stroke-linecap="round" stroke-linejoin="round" d="M6 18 18 6M6 6l12 12" />
-			</svg>
+			<XMark className={'size-4'} />
 		</button>
 	</div>
 
@@ -356,7 +513,7 @@
 			{#each visualizerData.slice().reverse() as rms}
 				<div class="flex items-center h-full">
 					<div
-						class="w-[2px] flex-shrink-0
+						class="w-[0.125rem] shrink-0
                     
                     {loading
 							? ' bg-gray-500 dark:bg-gray-400   '
@@ -377,7 +534,7 @@
         
         
         {loading ? ' text-gray-500  dark:text-gray-400  ' : ' text-indigo-400 '} 
-       font-medium flex-1 mx-auto text-center"
+       font-normal flex-1 mx-auto text-center"
 			>
 				{formatSeconds(durationSeconds)}
 			</div>
@@ -477,7 +634,9 @@
 				</div>
 			{:else}
 				<button
+					id={confirmButtonId}
 					type="button"
+					aria-label={$i18n.t('Confirm recording')}
 					class="p-1.5 bg-indigo-500 text-white dark:bg-indigo-500 dark:text-blue-950 rounded-full"
 					on:click={async () => {
 						await confirmRecording();
