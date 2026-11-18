@@ -9,7 +9,7 @@ permissions:
 
 on:
   push:
-    branches: [main, dev]
+    branches: [main, dev, 'security/**']
     paths: ['backend/**', 'pyproject.toml', 'uv.lock', '.github/workflows/backend.yaml']
   pull_request:
     branches: [main, dev]
