@@ -1,8 +1,11 @@
 import asyncio
 import importlib.util
+import io
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock, MagicMock, patch
+
+from PIL import Image, UnidentifiedImageError
 
 module_path = Path(__file__).parents[2] / 'utils' / 'images' / 'hosted.py'
 spec = importlib.util.spec_from_file_location('hosted_image_providers', module_path)
@@ -97,3 +100,12 @@ class HostedImageTests(IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(ValueError, 'Enter the Replicate model'):
             await self.generate(session, 'replicate', '/absolute/path')
         session.post.assert_not_called()
+
+    def test_raster_validation_reads_the_actual_format(self):
+        buffer = io.BytesIO()
+        Image.new('RGB', (2, 2)).save(buffer, format='PNG')
+        self.assertEqual(hosted.validate_hosted_image(buffer.getvalue()), 'image/png')
+
+    def test_raster_validation_rejects_non_images(self):
+        with self.assertRaises(UnidentifiedImageError):
+            hosted.validate_hosted_image(b'not a valid image')

@@ -1,11 +1,13 @@
 """Text-to-image adapters for the fork's hosted image providers."""
 
 import asyncio
+import io
 import re
 from collections.abc import Awaitable, Callable
 from urllib.parse import urlsplit
 
 from aiohttp import ClientResponse, ClientSession, ClientTimeout
+from PIL import Image
 
 HOSTED_IMAGE_PROVIDERS = {
     'togetherai': 'https://api.together.ai/v1',
@@ -15,6 +17,14 @@ HOSTED_IMAGE_PROVIDERS = {
 HOSTED_PROVIDER_TIMEOUT = ClientTimeout(total=90)
 REPOSITORY_MODEL = re.compile(r'[\w.-]+/[\w.-]+', re.ASCII)
 MAX_IMAGE_BYTES = 32 * 1024 * 1024
+
+
+def validate_hosted_image(image_data: bytes | None) -> str:
+    if not image_data or len(image_data) > MAX_IMAGE_BYTES:
+        raise ValueError('The generated image is empty or exceeds 32 MiB.')
+    with Image.open(io.BytesIO(image_data), formats=('PNG', 'JPEG', 'WEBP')) as image:
+        image.verify()
+        return Image.MIME[image.format]
 
 
 async def generate_hosted_images(
