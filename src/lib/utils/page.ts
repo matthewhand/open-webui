@@ -1,6 +1,6 @@
 import { getContext, onDestroy } from 'svelte';
 import { derived, readable, type Readable, type Writable } from 'svelte/store';
-import { page } from '$app/stores';
+import { page } from '$lib/stores/currentPage';
 import { goto } from '$app/navigation';
 
 export type PageContext = {

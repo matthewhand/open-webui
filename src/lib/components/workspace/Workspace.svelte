@@ -94,24 +94,24 @@
 	onMount(async () => {
 		if ($user?.role !== 'admin') {
 			if ($pageUrl.pathname.includes('/models') && !$user?.permissions?.workspace?.models) {
-				goto('/', { replaceState: true });
+				goto('/', { replace: true });
 			} else if (
 				$pageUrl.pathname.includes('/knowledge') &&
 				!$user?.permissions?.workspace?.knowledge
 			) {
-				goto('/', { replaceState: true });
+				goto('/', { replace: true });
 			} else if (
 				$pageUrl.pathname.includes('/prompts') &&
 				!$user?.permissions?.workspace?.prompts
 			) {
-				goto('/', { replaceState: true });
+				goto('/', { replace: true });
 			} else if (
 				$pageUrl.pathname.includes('/tools') &&
 				(!$config?.features?.enable_tools || !$user?.permissions?.workspace?.tools)
 			) {
-				goto('/', { replaceState: true });
+				goto('/', { replace: true });
 			} else if ($pageUrl.pathname.includes('/skills') && !$user?.permissions?.workspace?.skills) {
-				goto('/', { replaceState: true });
+				goto('/', { replace: true });
 			}
 		}
 

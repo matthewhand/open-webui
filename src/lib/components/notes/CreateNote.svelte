@@ -19,7 +19,7 @@
 		const res = await createNoteHandler(title, content);
 
 		if (res) {
-			goto(`/notes/${res.id}`, { replaceState: true });
+			goto(`/notes/${res.id}`, { replace: true });
 		} else {
 			showConfirm = true;
 		}
@@ -30,7 +30,7 @@
 	bind:show={showConfirm}
 	title={$i18n.t('Create a new note')}
 	on:confirm={createNote}
-	on:cancel={() => goto('/notes', { replaceState: true })}
+	on:cancel={() => goto('/notes', { replace: true })}
 >
 	<div class="text-sm text-gray-500 whitespace-pre-wrap break-words max-h-60 overflow-auto">
 		<div class="font-medium">{title}</div>

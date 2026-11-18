@@ -3,7 +3,7 @@
 
 	import { goto } from '$app/navigation';
 	import { adminGroupCount, adminUserCount, config, user } from '$lib/stores';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { getGroups } from '$lib/apis/groups';
 	import { getUsers } from '$lib/apis/users';
 	import { formatNumber } from '$lib/utils';

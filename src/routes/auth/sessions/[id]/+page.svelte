@@ -2,7 +2,7 @@
 	import { getContext, onMount } from 'svelte';
 	import { get, type Readable } from 'svelte/store';
 	import type { i18n as I18n } from 'i18next';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { goto } from '$app/navigation';
 	import { user, config, WEBUI_NAME } from '$lib/stores';
 	import { WEBUI_API_BASE_URL, WEBUI_BASE_URL } from '$lib/constants';

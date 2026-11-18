@@ -15,7 +15,7 @@
 	import XMark from '../icons/XMark.svelte';
 
 	import { toast } from 'svelte-sonner';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { goto } from '$app/navigation';
 	import { baseModels, user, config, settings } from '$lib/stores';
 	import { getModels } from '$lib/apis';

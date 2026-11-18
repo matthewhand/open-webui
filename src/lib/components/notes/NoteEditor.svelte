@@ -228,7 +228,7 @@
 		try {
 			pageBusy = true;
 			await flushActivePage();
-			await goto(url.pathname + url.search, { noScroll: true, keepFocus: true });
+			await goto(url.pathname + url.search, { reset: false });
 		} catch (error) {
 			toast.error(String(error));
 		} finally {
@@ -267,9 +267,8 @@
 			url.searchParams.set('page', target);
 			// The old page was flushed above; the new editor is still initializing.
 			await goto(url.pathname + url.search, {
-				replaceState: true,
-				noScroll: true,
-				keepFocus: true
+				replace: true,
+				reset: false
 			});
 			return newId ?? target;
 		} catch (error) {
@@ -325,7 +324,7 @@
 			activatePage(note.data.pages[Math.max(0, Math.min(oldIndex, note.data.pages.length - 1))].id);
 			const url = new URL($pageUrl);
 			url.searchParams.set('page', activePageId);
-			void goto(url, { replaceState: true, noScroll: true, keepFocus: true });
+			void goto(url, { replace: true, reset: false });
 		}
 	}
 

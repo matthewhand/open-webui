@@ -1,7 +1,7 @@
 <script>
 	import { toast } from 'svelte-sonner';
 	import { onMount, getContext } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 
 	const i18n = getContext('i18n');
 

@@ -8,20 +8,20 @@
 	onMount(() => {
 		if ($user?.role !== 'admin') {
 			if ($user?.permissions?.workspace?.models) {
-				goto('/workspace/models', { replaceState: true });
+				goto('/workspace/models', { replace: true });
 			} else if ($user?.permissions?.workspace?.knowledge) {
-				goto('/workspace/knowledge', { replaceState: true });
+				goto('/workspace/knowledge', { replace: true });
 			} else if ($user?.permissions?.workspace?.prompts) {
-				goto('/workspace/prompts', { replaceState: true });
+				goto('/workspace/prompts', { replace: true });
 			} else if ($config?.features?.enable_tools && $user?.permissions?.workspace?.tools) {
-				goto('/workspace/tools', { replaceState: true });
+				goto('/workspace/tools', { replace: true });
 			} else if ($user?.permissions?.workspace?.skills) {
-				goto('/workspace/skills', { replaceState: true });
+				goto('/workspace/skills', { replace: true });
 			} else {
-				goto('/', { replaceState: true });
+				goto('/', { replace: true });
 			}
 		} else {
-			goto('/workspace/models', { replaceState: true });
+			goto('/workspace/models', { replace: true });
 		}
 	});
 </script>

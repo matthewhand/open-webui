@@ -4,7 +4,7 @@
 	import type { AppLayoutContext } from '$lib/types';
 
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { fade } from 'svelte/transition';
 
 	import { getBackendConfig, getModels, getVersionUpdates } from '$lib/apis';
@@ -204,9 +204,8 @@
 		params.delete('settings');
 		const query = params.toString();
 		await goto(`${$page.url.pathname}${query ? `?${query}` : ''}${$page.url.hash}`, {
-			replaceState: true,
-			noScroll: true,
-			keepFocus: true
+			replace: true,
+			reset: false
 		});
 	};
 

@@ -1,5 +1,5 @@
 <script>
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import KnowledgeBase from '$lib/components/workspace/Knowledge/KnowledgeBase.svelte';
 </script>
 
