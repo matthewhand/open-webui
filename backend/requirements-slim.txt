@@ -11,13 +11,13 @@ itsdangerous==2.2.0
 
 python-socketio==5.16.2
 orjson==3.11.9
-cryptography==48.0.1
+cryptography==49.0.0
 pyotp==2.9.0
 qrcode==8.2
 bcrypt==5.0.0
 argon2-cffi==25.1.0
-PyJWT[crypto]==2.13.0
-authlib==1.7.2
+PyJWT[crypto]==2.15.0
+authlib==1.9.1
 joserfc==1.7.4
 
 requests==2.34.2
@@ -73,7 +73,7 @@ psutil==7.2.2
 pillow==13.0.0
 rank-bm25==0.2.2
 
-black==26.5.1
+black==26.10.1
 youtube-transcript-api==1.2.4
 
 azure-ai-documentintelligence==1.0.2
@@ -92,15 +92,15 @@ ldap3==2.9.1
 
 ## Trace
 googleapis-common-protos==1.75.0
-opentelemetry-api==1.42.1
-opentelemetry-sdk==1.42.1
-opentelemetry-exporter-otlp==1.42.1
-opentelemetry-instrumentation==0.63b1
-opentelemetry-instrumentation-fastapi==0.63b1
-opentelemetry-instrumentation-sqlalchemy==0.63b1
-opentelemetry-instrumentation-redis==0.63b1
-opentelemetry-instrumentation-requests==0.63b1
-opentelemetry-instrumentation-logging==0.63b1
-opentelemetry-instrumentation-httpx==0.63b1
-opentelemetry-instrumentation-aiohttp-client==0.63b1
-opentelemetry-instrumentation-system-metrics==0.63b1
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp==1.45.2
+opentelemetry-instrumentation==0.66b2
+opentelemetry-instrumentation-fastapi==0.66b2
+opentelemetry-instrumentation-sqlalchemy==0.66b2
+opentelemetry-instrumentation-redis==0.66b2
+opentelemetry-instrumentation-requests==0.66b2
+opentelemetry-instrumentation-logging==0.66b2
+opentelemetry-instrumentation-httpx==0.66b2
+opentelemetry-instrumentation-aiohttp-client==0.66b2
+opentelemetry-instrumentation-system-metrics==0.66b2
