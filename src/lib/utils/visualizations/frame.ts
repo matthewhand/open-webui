@@ -26,7 +26,7 @@ const sources = new Map<string, Promise<string>>();
 export function getVisualizationVendor(name: 'purifier' | 'chartjs') {
 	const file = name === 'purifier' ? 'purify.min.js' : 'chart.umd.min.js';
 	if (!sources.has(file)) {
-		const promise = fetch(`${resolve('/')}visualizations/${file}`)
+		const promise = fetch(`${resolve('')}visualizations/${file}`)
 			.then(async (response) => {
 				if (!response.ok) throw new Error('Visualization library could not load.');
 				return response.text();
