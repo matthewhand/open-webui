@@ -13,7 +13,7 @@ function snapshot() {
 		route: route.route,
 		state: route.state,
 		status: route.status,
-		url: route.url
+		url: new URL(route.url.href)
 	};
 }
 

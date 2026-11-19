@@ -45,14 +45,13 @@ export default defineConfig({
 				},
 				{
 					src: 'node_modules/onnxruntime-web/dist/*.jsep.*',
-
 					dest: 'wasm'
 				},
 				{
 					src: 'node_modules/pdfjs-dist/wasm/*',
 					dest: 'wasm'
 				}
-			]
+			].map((target) => ({ ...target, rename: { stripBase: true } }))
 		})
 	],
 	define: {
@@ -62,10 +61,16 @@ export default defineConfig({
 	},
 	build: {
 		target: 'es2022',
-		sourcemap: true
+		sourcemap: true,
+		rolldownOptions: {
+			treeshake: {
+				manualPureFunctions:
+					process.env.ENV === 'dev' ? [] : ['console.log', 'console.debug', 'console.error']
+			}
+		}
 	},
 	optimizeDeps: {
-		esbuildOptions: { target: 'es2022' }
+		rolldownOptions: { transform: { target: 'es2022' } }
 	},
 	server: {
 		proxy: {
@@ -95,8 +100,5 @@ export default defineConfig({
 	},
 	worker: {
 		format: 'es'
-	},
-	esbuild: {
-		pure: process.env.ENV === 'dev' ? [] : ['console.log', 'console.debug', 'console.error']
 	}
 });
