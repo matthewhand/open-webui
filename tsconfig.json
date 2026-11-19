@@ -10,5 +10,18 @@
 		"sourceMap": true,
 		"strict": true
 	},
-	"include": ["src", "test", "*.js", "*.ts"]
+	// Match the previous source scope and use adjacent declarations for generated JavaScript.
+	"include": [
+		"src/**/*.js",
+		"src/**/*.ts",
+		"src/**/*.svelte",
+		"test/**/*.js",
+		"test/**/*.ts",
+		"test/**/*.svelte",
+		"tests/**/*.js",
+		"tests/**/*.ts",
+		"tests/**/*.svelte",
+		"vite.config.js",
+		"vite.config.ts"
+	]
 }
