@@ -12,7 +12,7 @@
 
 	import { onMount, getContext } from 'svelte';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 
 	import { getBackendConfig } from '$lib/apis';
 	import {

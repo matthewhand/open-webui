@@ -3,7 +3,7 @@
 	import { goto } from '$app/navigation';
 
 	import { WEBUI_NAME, config, mobile, showSettings, showSidebar, user } from '$lib/stores';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';
 
 	import Sidebar from '$lib/components/icons/Sidebar.svelte';
@@ -14,12 +14,12 @@
 
 	onMount(async () => {
 		if ($user?.role !== 'admin') {
-			await goto('/', { replaceState: true });
+			await goto('/', { replace: true });
 		} else if (
 			!$config?.features?.enable_functions &&
 			$page.url.pathname.includes('/admin/functions')
 		) {
-			await goto('/admin', { replaceState: true });
+			await goto('/admin', { replace: true });
 		}
 		loaded = true;
 	});

@@ -2,7 +2,7 @@
 	import { onMount } from 'svelte';
 
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { showSidebar } from '$lib/stores';
 
 	import dayjs from '$lib/dayjs';

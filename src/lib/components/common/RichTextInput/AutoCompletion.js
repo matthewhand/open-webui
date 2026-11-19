@@ -44,6 +44,7 @@ export const AIAutocompletion = Extension.create({
 
 	addOptions() {
 		return {
+			/** @type {(prompt: string) => Promise<string | null>} */
 			generateCompletion: () => Promise.resolve(''),
 			debounceTime: 1000
 		};

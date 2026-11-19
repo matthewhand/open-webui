@@ -36,7 +36,7 @@
 	title={$i18n.t('Create a new note')}
 	on:confirm={async () => {
 		const res = await createNoteHandler(title, content);
-		if (res) goto(`/notes/${res.id}`, { replaceState: true });
+		if (res) goto(`/notes/${res.id}`, { replace: true });
 		else showConfirm = true;
 	}}
 >

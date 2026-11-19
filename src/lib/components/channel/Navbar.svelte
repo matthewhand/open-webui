@@ -5,7 +5,7 @@
 	import { mobile, showSidebar, user } from '$lib/stores';
 
 	import { slide } from 'svelte/transition';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { getPageContext } from '$lib/utils/page';
 
 	import { WEBUI_API_BASE_URL } from '$lib/constants';

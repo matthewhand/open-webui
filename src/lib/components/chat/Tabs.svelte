@@ -51,7 +51,7 @@
 	import CommentsPanel, {
 		type CommentsRequest
 	} from '$lib/components/comments/CommentsPanel.svelte';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 
 	import {
 		createTabsState,

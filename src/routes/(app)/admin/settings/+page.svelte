@@ -3,6 +3,6 @@
 	import { onMount } from 'svelte';
 
 	onMount(() => {
-		goto('/?settings=admin%3Ageneral', { replaceState: true });
+		goto('/?settings=admin%3Ageneral', { replace: true });
 	});
 </script>

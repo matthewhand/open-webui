@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import { goto, replaceState } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { mobile, showTabs, showSidebar, socket, user } from '$lib/stores';
 	import { commentLink } from '$lib/utils';
 	import { refreshInboxCount, setInboxCount } from '$lib/stores/inbox';

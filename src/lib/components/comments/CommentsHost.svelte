@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { getContext, onMount } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { config, user, showTabs } from '$lib/stores';
 	import Annotation from '$lib/components/icons/Annotation.svelte';
 	import CommentHighlights from './CommentHighlights.svelte';

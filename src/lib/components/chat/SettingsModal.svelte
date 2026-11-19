@@ -5,7 +5,7 @@
 		searchSettingsTabs,
 		type SettingsTab
 	} from '$lib/utils/settings-search';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 	import { getContext, tick } from 'svelte';
 	import type { Writable } from 'svelte/store';
 	import { toast } from 'svelte-sonner';

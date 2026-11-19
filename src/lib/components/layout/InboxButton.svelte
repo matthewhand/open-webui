@@ -1,7 +1,7 @@
 <script lang="ts">
 	import { getContext } from 'svelte';
 	import { pushState } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { settings, user } from '$lib/stores';
 	import { inboxCount } from '$lib/stores/inbox';
 	import Tooltip from '$lib/components/common/Tooltip.svelte';

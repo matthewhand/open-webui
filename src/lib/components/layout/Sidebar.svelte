@@ -7,7 +7,7 @@
 	import { goto } from '$app/navigation';
 	import type { AppLayoutContext } from '$lib/types';
 	import { pageTabKey } from '$lib/components/chat/Tabs/tabs';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import {
 		user,
 		chats,

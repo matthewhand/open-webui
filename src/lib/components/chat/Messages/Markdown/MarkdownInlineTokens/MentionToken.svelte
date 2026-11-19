@@ -19,7 +19,7 @@
 	import { LinkPreview } from 'bits-ui';
 
 	import { getContext } from 'svelte';
-	import { browser } from '$app/environment';
+	import { browser } from '$app/env';
 
 	import { goto } from '$app/navigation';
 	import type { AppLayoutContext } from '$lib/types';

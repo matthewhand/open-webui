@@ -45,7 +45,7 @@
 	import { clearFolderStates } from '$lib/stores/folderStates';
 	import { getFileContentById } from '$lib/apis/files';
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { beforeNavigate } from '$app/navigation';
 	import { updated } from '$app/state';
 

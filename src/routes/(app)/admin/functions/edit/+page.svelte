@@ -3,7 +3,7 @@
 	import { onMount, getContext } from 'svelte';
 
 	import { goto } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { config, functions, models, settings } from '$lib/stores';
 	import { updateFunctionById, getFunctions, getFunctionById } from '$lib/apis/functions';
 
@@ -59,7 +59,7 @@
 
 	onMount(async () => {
 		if (!$config?.features?.enable_functions) {
-			goto('/admin', { replaceState: true });
+			goto('/admin', { replace: true });
 			return;
 		}
 

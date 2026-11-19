@@ -233,7 +233,7 @@
 		if (!$pageUrl.searchParams.has('event')) return;
 		const url = new URL($pageUrl);
 		url.searchParams.delete('event');
-		void goto(url, { replaceState: true, noScroll: true, keepFocus: true, state: {} });
+		void goto(url, { replace: true, reset: false, state: {} });
 	}
 
 	$: if (loaded) void openLinkedEvent($pageUrl.searchParams.get('event'));

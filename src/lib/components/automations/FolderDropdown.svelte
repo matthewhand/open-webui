@@ -38,7 +38,7 @@
 		return names.join(' / ');
 	};
 
-	$: folderOptions = [...((($folders ?? []) as any[]) ?? [])]
+	$: folderOptions = [...(($folders ?? []) as any[])]
 		.filter((folder) => folder?.id && !folder?.shared)
 		.sort((a, b) => folderName(a).localeCompare(folderName(b)));
 	$: folderById = new Map(folderOptions.map((folder) => [folder.id, folder]));

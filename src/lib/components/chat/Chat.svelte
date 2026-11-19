@@ -18,7 +18,7 @@
 	const appLayout = getContext<AppLayoutContext | undefined>('appLayout');
 
 	import { goto, beforeNavigate, afterNavigate } from '$app/navigation';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 
 	import { get, writable, type Unsubscriber, type Writable } from 'svelte/store';
 	import type { i18n as i18nType } from 'i18next';

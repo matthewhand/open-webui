@@ -1,6 +1,6 @@
 <script>
 	import { getContext, onMount } from 'svelte';
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { adminFeedbackCount, adminLeaderboardCount, models as _models } from '$lib/stores';
 	import { getFeedbackItems, getLeaderboard } from '$lib/apis/evaluations';
 	import { formatNumber } from '$lib/utils';

@@ -3,7 +3,7 @@
 	import { onMount, getContext, tick, onDestroy } from 'svelte';
 	const i18n = getContext('i18n');
 
-	import { page } from '$app/stores';
+	import { page } from '$lib/stores/currentPage';
 	import { channels, mobile, showSidebar, user } from '$lib/stores';
 	import { getUserActiveStatusById } from '$lib/apis/users';
 	import { updateChannelById, updateChannelMemberActiveStatusById } from '$lib/apis/channels';

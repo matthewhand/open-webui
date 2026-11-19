@@ -24,7 +24,7 @@
 	const signIn = async () => {
 		localStorage.removeItem('token');
 		user.set(undefined);
-		await goto('/auth?state=logout&form=signin', { replaceState: true });
+		await goto('/auth?state=logout&form=signin', { replace: true });
 		onClose();
 	};
 
